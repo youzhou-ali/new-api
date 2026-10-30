@@ -48,6 +48,20 @@ const (
 	MsgRelayRetryGetChannelFailed        = "relay.retry_get_channel_failed"
 	MsgRelayRetryNoAvailableChannel      = "relay.retry_no_available_channel"
 	MsgRelayAccessTokenUnsupported       = "relay.access_token_unsupported"
+
+	MsgSearchJSONRequired         = "search.json_required"
+	MsgSearchUnsupportedField     = "search.unsupported_field"
+	MsgSearchInvalidModel         = "search.invalid_model"
+	MsgSearchInvalidQuery         = "search.invalid_query"
+	MsgSearchInvalidCount         = "search.invalid_count"
+	MsgSearchInvalidFreshness     = "search.invalid_freshness"
+	MsgSearchUnsupportedFreshness = "search.unsupported_freshness"
+	MsgSearchInvalidChannel       = "search.invalid_channel"
+	MsgSearchChannelOverrides     = "search.channel_overrides"
+	MsgSearchInvalidBaseURL       = "search.invalid_base_url"
+	MsgSearchUpstreamFailed       = "search.upstream_failed"
+	MsgSearchInvalidResponse      = "search.invalid_response"
+	MsgSearchFixedPriceRequired   = "search.fixed_price_required"
 )
 
 // Emails and the name of the token created at registration, in the

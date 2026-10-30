@@ -20,6 +20,10 @@ import {
   CHANNEL_TYPES,
   CHANNEL_TYPE_VLLM,
   CHANNEL_TYPE_SGLANG,
+  CHANNEL_TYPE_TAVILY,
+  CHANNEL_TYPE_BRAVE_SEARCH,
+  CHANNEL_TYPE_BOCHA_SEARCH,
+  CHANNEL_TYPE_BAIDU_SEARCH,
 } from '../constants'
 
 // ============================================================================
@@ -49,6 +53,30 @@ export interface ChannelTypeConfig {
  * Configuration for each channel type
  */
 export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
+  [CHANNEL_TYPE_TAVILY]: {
+    id: CHANNEL_TYPE_TAVILY,
+    name: CHANNEL_TYPES[CHANNEL_TYPE_TAVILY],
+    icon: 'Tavily',
+    supportedModels: ['tavily-search', 'tavily-search-advanced'],
+  },
+  [CHANNEL_TYPE_BRAVE_SEARCH]: {
+    id: CHANNEL_TYPE_BRAVE_SEARCH,
+    name: CHANNEL_TYPES[CHANNEL_TYPE_BRAVE_SEARCH],
+    icon: 'Brave',
+    supportedModels: ['brave-search'],
+  },
+  [CHANNEL_TYPE_BOCHA_SEARCH]: {
+    id: CHANNEL_TYPE_BOCHA_SEARCH,
+    name: CHANNEL_TYPES[CHANNEL_TYPE_BOCHA_SEARCH],
+    icon: 'Bocha',
+    supportedModels: ['bocha-search'],
+  },
+  [CHANNEL_TYPE_BAIDU_SEARCH]: {
+    id: CHANNEL_TYPE_BAIDU_SEARCH,
+    name: CHANNEL_TYPES[CHANNEL_TYPE_BAIDU_SEARCH],
+    icon: 'Baidu',
+    supportedModels: ['baidu-search'],
+  },
   [CHANNEL_TYPE_SGLANG]: {
     id: CHANNEL_TYPE_SGLANG,
     name: CHANNEL_TYPES[CHANNEL_TYPE_SGLANG],

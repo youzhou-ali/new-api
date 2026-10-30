@@ -61,6 +61,10 @@ const (
 	ChannelTypeTaskPlugin     = 61
 	ChannelTypeVLLM           = 62
 	ChannelTypeSGLang         = 63
+	ChannelTypeTavily         = 64
+	ChannelTypeBraveSearch    = 65
+	ChannelTypeBochaSearch    = 66
+	ChannelTypeBaiduSearch    = 67
 	ChannelTypeDummy          // this one is only for count, do not add any channel after this
 
 )
@@ -132,6 +136,10 @@ var ChannelBaseURLs = []string{
 	"",                                          //61
 	"",                                          //62
 	"",                                          //63
+	"https://api.tavily.com",                    //64
+	"https://api.search.brave.com",              //65
+	"https://api.bochaai.com",                   //66
+	"https://qianfan.baidubce.com",              //67
 }
 
 func GetChannelBaseURL(channelType int) string {
@@ -202,6 +210,10 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeTaskPlugin:     "Task Plugin",
 	ChannelTypeVLLM:           "vLLM",
 	ChannelTypeSGLang:         "SGLang",
+	ChannelTypeTavily:         "Tavily",
+	ChannelTypeBraveSearch:    "Brave Search",
+	ChannelTypeBochaSearch:    "Bocha Search",
+	ChannelTypeBaiduSearch:    "Baidu Search",
 }
 
 func GetChannelTypeName(channelType int) string {

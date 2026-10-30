@@ -82,6 +82,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { updateChannel } from '../../api'
+import { SEARCH_CHANNEL_TYPES } from '../../constants'
 import {
   channelsQueryKeys,
   formatResponseTime,
@@ -191,9 +192,11 @@ const endpointTypeOptions: Array<{ value: string; label: string }> = [
     label: 'Image Generation (/v1/images/generations)',
   },
   { value: 'embeddings', label: 'Embeddings (/v1/embeddings)' },
+  { value: 'search', label: 'Web Search (/v1/search)' },
 ]
 
 const STREAM_INCOMPATIBLE_ENDPOINTS = new Set([
+  'search',
   'embeddings',
   'image-generation',
   'jina-rerank',
@@ -405,7 +408,9 @@ function ChannelTestDialogContent({
     setPagination({ pageIndex: 0, pageSize: 30 })
   }, [])
 
-  const streamDisabled = STREAM_INCOMPATIBLE_ENDPOINTS.has(endpointType)
+  const streamDisabled =
+    STREAM_INCOMPATIBLE_ENDPOINTS.has(endpointType) ||
+    SEARCH_CHANNEL_TYPES.has(currentRow.type)
   const effectiveStreamTest = !streamDisabled && isStreamTest
 
   const handleEndpointTypeChange = useCallback((value: string | null) => {

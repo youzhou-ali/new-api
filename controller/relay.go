@@ -35,6 +35,8 @@ import (
 func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	switch info.RelayMode {
+	case relayconstant.RelayModeSearch:
+		err = relay.SearchHelper(c, info)
 	case relayconstant.RelayModeImagesGenerations, relayconstant.RelayModeImagesEdits:
 		err = relay.ImageHelper(c, info)
 	case relayconstant.RelayModeAudioSpeech:

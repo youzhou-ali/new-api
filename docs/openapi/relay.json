@@ -55,6 +55,9 @@
       "name": "重排序(Rerank)"
     },
     {
+      "name": "网页搜索"
+    },
+    {
       "name": "Moderations"
     },
     {
@@ -1782,6 +1785,110 @@
               }
             },
             "headers": {}
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "summary": "网页搜索",
+        "deprecated": false,
+        "description": "统一调用 Tavily、Brave Search、Bocha Search 或百度搜索。使用与模型调用相同的 API Key，通过 model 显式选择搜索源和档位；不跨供应商自动切换。成功响应（包括空结果）按配置的每次价格及分组倍率计费，最终失败退款，同源重试成功只计费一次。返回网页摘要，不包含 AI 生成回答或全文抓取。百度使用固定 standard 版，仅搜索网页。",
+        "operationId": "createSearch",
+        "tags": [
+          "网页搜索"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              },
+              "example": {
+                "model": "tavily-search",
+                "query": "可再生能源",
+                "max_results": 5,
+                "freshness": "month"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "搜索成功；results 可为空数组",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数或价格配置无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Key 无效、失效或不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权使用该搜索产品",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求超过限流",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "上游返回无效响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "没有可用渠道或上游暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3886,6 +3993,108 @@
             "minimum": 0.25,
             "maximum": 4,
             "default": 1
+          }
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "query"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "enum": [
+              "tavily-search",
+              "tavily-search-advanced",
+              "brave-search",
+              "bocha-search",
+              "baidu-search"
+            ],
+            "description": "搜索产品；Tavily 的 basic 和 advanced 档位分别定价；baidu-search 固定使用百度 standard 版，平台不会自动升级"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "非空搜索词，最多 400 个 Unicode 字符且最多 50 个空白分隔词。百度上游仅检索前 72 个字符（其文档按一个汉字计两个字符），建议使用简短查询；网关原样转发，不自动改写"
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5,
+            "description": "最多返回的结果条数，实际结果可能更少"
+          },
+          "freshness": {
+            "type": "string",
+            "enum": [
+              "",
+              "day",
+              "week",
+              "month",
+              "year"
+            ],
+            "description": "信息时效过滤；省略或空字符串表示不限时间，各搜索源按自身索引解释时效。百度支持 week/month/year，不支持 day，传入 day 返回 400"
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "model",
+          "query",
+          "results"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "本次请求标识"
+          },
+          "model": {
+            "type": "string",
+            "description": "调用的搜索产品"
+          },
+          "query": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            },
+            "description": "网页结果；成功时始终为数组，空数组仍计费"
+          }
+        }
+      },
+      "SearchResult": {
+        "type": "object",
+        "required": [
+          "title",
+          "url",
+          "content"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string",
+            "description": "搜索源提供的网页摘要，不保证全文"
+          },
+          "published_date": {
+            "type": "string",
+            "description": "搜索源提供的日期信息；可能缺省，不保证统一日期格式"
+          },
+          "site_name": {
+            "type": "string",
+            "description": "搜索源提供的站点名，可能缺省"
           }
         }
       },

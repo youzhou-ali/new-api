@@ -535,6 +535,9 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if err := channel.ValidateSettings(); err != nil {
 		return common.NewMessage("Invalid channel settings format: {{error}}", map[string]any{"error": err.Error()})
 	}
+	if err := channel.ValidateSearchConfiguration(); err != nil {
+		return err
+	}
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		pluginKey := strings.TrimSpace(channel.GetSetting().TaskPluginKey)
 		if pluginKey == "" {
@@ -1001,6 +1004,23 @@ func EditTagChannels(c *gin.Context) {
 		}
 		channelTag.HeaderOverride = common.GetPointer[string](trimmed)
 	}
+	if channelTag.Models != nil || channelTag.ModelMapping != nil || channelTag.ParamOverride != nil {
+		channels, err := model.GetChannelsByTag(channelTag.Tag, false, false)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		update := &model.Channel{ModelMapping: channelTag.ModelMapping, ParamOverride: channelTag.ParamOverride}
+		if channelTag.Models != nil {
+			update.Models = *channelTag.Models
+		}
+		for _, channel := range channels {
+			if err := channel.ValidateSearchUpdate(update); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+	}
 	err = model.EditChannelByTag(channelTag.Tag, channelTag.NewTag, channelTag.ModelMapping, channelTag.Models, channelTag.Groups, channelTag.Priority, channelTag.Weight, channelTag.ParamOverride, channelTag.HeaderOverride)
 	if err != nil {
 		common.ApiError(c, err)
@@ -1106,6 +1126,10 @@ func UpdateChannel(c *gin.Context) {
 	// Preserve existing ChannelInfo to ensure multi-key channels keep correct state even if the client does not send ChannelInfo in the request.
 	originChannel, err := model.GetChannelById(channel.Id, true)
 	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := originChannel.ValidateSearchUpdate(&channel.Channel); err != nil {
 		common.ApiError(c, err)
 		return
 	}

@@ -865,3 +865,76 @@ test('an empty plugin filter reports that no plugins can be bound', async () => 
   expect(screen.getByText('No plugins available for binding')).toBeVisible()
   expect(screen.queryByRole('option')).not.toBeInTheDocument()
 })
+
+test.each([
+  ['Tavily', 64],
+  ['Brave Search', 65],
+  ['Bocha Search', 66],
+  ['Baidu Search', 67],
+])(
+  'the built-in provider picker selects %s as a search channel',
+  async (name, type) => {
+    const user = userEvent.setup()
+    const select = vi.fn()
+    render(
+      <ChannelProviderPicker
+        isCreating
+        plugins={[]}
+        canBindPlugin
+        loading={false}
+        failed={false}
+        disabled={false}
+        onRetry={vi.fn()}
+        onSelect={select}
+      />
+    )
+    await user.type(screen.getByRole('combobox'), String(name))
+    await user.click(
+      screen.getByRole('option', { name: `${name} Built-in #${type}` })
+    )
+    expect(select).toHaveBeenCalledWith({ kind: 'builtin', type })
+  }
+)
+
+test('Chinese Baidu search shows all three built-in providers and type 67 selects Baidu Search', async () => {
+  const language = createInstance()
+  await language.init({
+    lng: 'zhCN',
+    fallbackLng: 'en',
+    resources: { en: { translation: {} }, zhCN: zh },
+  })
+  const user = userEvent.setup()
+  const select = vi.fn()
+  render(
+    <I18nextProvider i18n={language}>
+      <ChannelProviderPicker
+        isCreating
+        plugins={[]}
+        canBindPlugin
+        loading={false}
+        failed={false}
+        disabled={false}
+        onRetry={vi.fn()}
+        onSelect={select}
+      />
+    </I18nextProvider>
+  )
+  const search = screen.getByRole('combobox')
+  await user.type(search, '百度')
+  for (const category of ['All', 'Built-in']) {
+    await user.click(screen.getByRole('tab', { name: language.t(category) }))
+    expect(screen.getAllByRole('option')).toHaveLength(3)
+    expect(screen.getByRole('option', { name: '百度 内置 #15' })).toBeVisible()
+    expect(
+      screen.getByRole('option', { name: '百度 V2 内置 #46' })
+    ).toBeVisible()
+    expect(
+      screen.getByRole('option', { name: '百度搜索 内置 #67' })
+    ).toBeVisible()
+  }
+  await user.clear(search)
+  await user.type(search, '67')
+  expect(screen.getAllByRole('option')).toHaveLength(1)
+  await user.click(screen.getByRole('option', { name: '百度搜索 内置 #67' }))
+  expect(select).toHaveBeenCalledWith({ kind: 'builtin', type: 67 })
+})

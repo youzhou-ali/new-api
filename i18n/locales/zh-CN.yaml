@@ -92,3 +92,18 @@ channel.upstream_update_added_models: "新增模型示例（展示 {{.Shown}}/{{
 channel.upstream_update_removed_models: "删除模型示例（展示 {{.Shown}}/{{.Total}}）：{{.Models}}"
 channel.upstream_update_failed_channels: "失败渠道 ID（展示 {{.Shown}}/{{.Total}}）：{{.Ids}}"
 channel.upstream_update_more_omitted: "（其余 {{.Count}} 个已省略）"
+
+# Unified web search
+search.json_required: "搜索请求需要 application/json"
+search.unsupported_field: "不支持的搜索字段：{{.Field}}"
+search.invalid_model: "不支持的搜索产品"
+search.invalid_query: "query 必须为 1 至 400 个字符且最多 50 个单词"
+search.invalid_count: "max_results 必须是 1 至 20 的整数"
+search.invalid_freshness: "freshness 必须为 day、week、month 或 year"
+search.unsupported_freshness: "{{.Model}} 不支持 freshness={{.Freshness}}"
+search.invalid_channel: "搜索产品与所选渠道不匹配"
+search.channel_overrides: "搜索渠道不能更改产品或覆盖请求参数"
+search.invalid_base_url: "搜索渠道地址无效"
+search.upstream_failed: "上游搜索请求失败"
+search.invalid_response: "上游搜索响应无效"
+search.fixed_price_required: "搜索需要配置按请求固定价格"

@@ -91,3 +91,18 @@ channel.upstream_update_added_models: "Added model examples (showing {{.Shown}}/
 channel.upstream_update_removed_models: "Removed model examples (showing {{.Shown}}/{{.Total}}): {{.Models}}"
 channel.upstream_update_failed_channels: "Failed channel IDs (showing {{.Shown}}/{{.Total}}): {{.Ids}}"
 channel.upstream_update_more_omitted: " ({{.Count}} more omitted)"
+
+# Unified web search
+search.json_required: "Search requires application/json"
+search.unsupported_field: "Unsupported search field: {{.Field}}"
+search.invalid_model: "Unsupported search model"
+search.invalid_query: "query must contain 1 to 400 characters and at most 50 words"
+search.invalid_count: "max_results must be an integer between 1 and 20"
+search.invalid_freshness: "freshness must be day, week, month or year"
+search.unsupported_freshness: "{{.Model}} does not support freshness={{.Freshness}}"
+search.invalid_channel: "The search product does not match the selected channel"
+search.channel_overrides: "Search channels cannot change the product or override request parameters"
+search.invalid_base_url: "Invalid search channel base URL"
+search.upstream_failed: "The upstream search request failed"
+search.invalid_response: "The upstream search response is invalid"
+search.fixed_price_required: "Search requires a configured fixed request price"

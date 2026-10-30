@@ -457,6 +457,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		//wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01
 		modelRequest.Model = c.Query("model")
 	}
+	if c.Request.URL.Path == "/v1/search" && constant.SearchChannelType(modelRequest.Model) == constant.ChannelTypeUnknown {
+		return nil, false, errors.New(i18n.T(c, i18n.MsgSearchInvalidModel))
+	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
 		if modelRequest.Model == "" {
 			modelRequest.Model = "text-moderation-stable"

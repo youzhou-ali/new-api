@@ -43,6 +43,8 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 		request, err = GetAndValidateAlphaSearchRequest(c)
 	case types.RelayFormatDeepSeekTools:
 		request, err = GetAndValidateDeepSeekToolsRequest(c)
+	case types.RelayFormatSearch:
+		request, err = GetAndValidateSearchRequest(c)
 
 	case types.RelayFormatOpenAIImage:
 		request, err = GetAndValidOpenAIImageRequest(c, relayMode)
