@@ -110,6 +110,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	endpointType = normalizeChannelTestEndpoint(channel, endpointType)
+	if constant.IsSearchChannel(channel.Type) || endpointType == string(constant.EndpointTypeSearch) {
+		return testSearchChannel(ctx, channel, testUserID, testModel, endpointType, isStream)
+	}
 
 	requestPath := "/v1/chat/completions"
 
@@ -522,6 +525,62 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		localErr:    nil,
 		newAPIError: nil,
 	}
+}
+
+func testSearchChannel(ctx context.Context, channel *model.Channel, userID int, modelName, endpointType string, stream bool) testResult {
+	if stream || (endpointType != "" && endpointType != string(constant.EndpointTypeSearch)) || constant.SearchChannelType(modelName) != channel.Type {
+		return testResult{localErr: common.NewMessage("Search channels require the search endpoint without streaming")}
+	}
+	if err := channel.ValidateSearchConfiguration(); err != nil {
+		return testResult{localErr: err}
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	request := &dto.SearchRequest{Model: modelName, Query: "New API", MaxResults: common.GetPointer(1)}
+	body, err := common.Marshal(request)
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/search", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	cache, err := model.GetUserCache(userID)
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	cache.WriteContext(c)
+	c.Set("id", userID)
+	c.Set("group", cache.Group)
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, modelName); apiErr != nil {
+		return testResult{context: c, localErr: apiErr, newAPIError: apiErr}
+	}
+	info, err := relaycommon.GenRelayInfo(c, types.RelayFormatSearch, request, nil)
+	if err != nil {
+		return testResult{context: c, localErr: err}
+	}
+	info.IsChannelTest = true
+	if err := attachTestBillingRequestInput(info, request); err != nil {
+		return testResult{context: c, localErr: err}
+	}
+	price, err := helper.ModelPriceHelper(c, info, 0, request.GetTokenCountMeta())
+	if err != nil {
+		return testResult{context: c, localErr: err}
+	}
+	if info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.EstimatedBillingUnit != billingexpr.BillingUnitRequest {
+		return testResult{context: c, localErr: errors.New(i18n.T(c, i18n.MsgSearchFixedPriceRequired))}
+	}
+	response, apiErr := relay.PerformSearch(c, info)
+	if apiErr != nil {
+		return testResult{context: c, localErr: apiErr, newAPIError: apiErr}
+	}
+	c.JSON(http.StatusOK, response)
+	usage := &dto.Usage{}
+	quota, tiered := settleTestQuota(info, price, usage)
+	model.RecordConsumeLog(c, userID, model.RecordConsumeLogParams{
+		ChannelId: channel.Id, ModelName: modelName, TokenName: "Model test", Quota: quota,
+		Content: []*common.Message{common.NewMessage("Model test")}, Group: info.UsingGroup,
+		Other: buildTestLogOther(c, info, price, usage, tiered),
+	})
+	return testResult{context: c}
 }
 
 func attachTestBillingRequestInput(info *relaycommon.RelayInfo, request dto.Request) error {

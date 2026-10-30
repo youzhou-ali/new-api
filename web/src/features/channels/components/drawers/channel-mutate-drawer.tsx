@@ -152,6 +152,7 @@ import {
   FIELD_DESCRIPTIONS,
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
+  SEARCH_CHANNEL_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../../constants'
 import { useChannelKeyDisclosure } from '../../hooks/use-channel-key-disclosure'
@@ -583,6 +584,7 @@ export function ChannelMutateDrawer({
   const keyMode = formValues.key_mode
   const currentGroups = formValues.group
   const currentType = formValues.type
+  const isSearchChannel = SEARCH_CHANNEL_TYPES.has(currentType)
   const baseUrlPlaceholder = [CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG].includes(
     currentType
   )
@@ -725,6 +727,8 @@ export function ChannelMutateDrawer({
 
   // Get basic models for the current channel type
   const basicModels = useMemo(() => {
+    const supportedModels = getChannelTypeConfig(currentType).supportedModels
+    if (supportedModels) return supportedModels
     if (!allModelsList.length) return []
     // Filter models based on common patterns for specific types
     if (currentType === 1) {
@@ -979,7 +983,7 @@ export function ChannelMutateDrawer({
       modelMappingGuardrail.entries.map((entry) => [entry.source, entry.target])
     )
     const allModels = new Set([
-      ...allModelsList,
+      ...(getChannelTypeConfig(currentType).supportedModels ?? allModelsList),
       ...currentModelsArray,
       ...pluginExtensions.flatMap((plugin) => plugin.models),
     ])
@@ -995,6 +999,7 @@ export function ChannelMutateDrawer({
     })
   }, [
     allModelsList,
+    currentType,
     currentModelsArray,
     pluginExtensions,
     modelMappingGuardrail.entries,
@@ -2417,7 +2422,7 @@ export function ChannelMutateDrawer({
     </div>
   )
 
-  const modelMappingFields = (
+  const modelMappingFields = !isSearchChannel && (
     <div
       role='group'
       aria-label={t('Model Mapping')}
@@ -2705,90 +2710,92 @@ export function ChannelMutateDrawer({
         disabled={sensitiveLocked}
         className='space-y-4 disabled:opacity-60'
       >
-        <FormField
-          control={form.control}
-          name='param_override'
-          render={({ field }) => (
-            <FormItem className='space-y-3 border-t pt-4'>
-              <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
-                <div className='space-y-1'>
-                  <FormLabel>{t('Parameter Override')}</FormLabel>
-                  <FormDescription>
-                    {t(
+        {!isSearchChannel && (
+          <FormField
+            control={form.control}
+            name='param_override'
+            render={({ field }) => (
+              <FormItem className='space-y-3 border-t pt-4'>
+                <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                  <div className='space-y-1'>
+                    <FormLabel>{t('Parameter Override')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Override request parameters. Cannot override stream parameter.'
+                      )}
+                    </FormDescription>
+                  </div>
+                  <div className='flex flex-wrap gap-2'>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => setParamOverrideEditorOpen(true)}
+                    >
+                      <Wand2 className='mr-2 h-4 w-4' />
+                      {t('Visual edit')}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => {
+                        field.onChange(
+                          JSON.stringify(
+                            {
+                              operations: [
+                                {
+                                  path: 'temperature',
+                                  mode: 'set',
+                                  value: 0.7,
+                                  conditions: [
+                                    {
+                                      path: 'model',
+                                      mode: 'prefix',
+                                      value: 'gpt',
+                                    },
+                                  ],
+                                  logic: 'AND',
+                                },
+                              ],
+                            },
+                            null,
+                            2
+                          )
+                        )
+                      }}
+                    >
+                      <Code className='mr-2 h-4 w-4' />
+                      {t('New Format Template')}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      onClick={() => field.onChange('')}
+                    >
+                      {t('Clear')}
+                    </Button>
+                  </div>
+                </div>
+                <FormControl>
+                  <JsonCodeEditor
+                    value={field.value || ''}
+                    onChange={field.onChange}
+                    name={field.name}
+                    onBlur={field.onBlur}
+                    textareaRef={field.ref}
+                    disabled={sensitiveLocked || isSubmitting}
+                    placeholder={t(
                       'Override request parameters. Cannot override stream parameter.'
                     )}
-                  </FormDescription>
-                </div>
-                <div className='flex flex-wrap gap-2'>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={() => setParamOverrideEditorOpen(true)}
-                  >
-                    <Wand2 className='mr-2 h-4 w-4' />
-                    {t('Visual edit')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={() => {
-                      field.onChange(
-                        JSON.stringify(
-                          {
-                            operations: [
-                              {
-                                path: 'temperature',
-                                mode: 'set',
-                                value: 0.7,
-                                conditions: [
-                                  {
-                                    path: 'model',
-                                    mode: 'prefix',
-                                    value: 'gpt',
-                                  },
-                                ],
-                                logic: 'AND',
-                              },
-                            ],
-                          },
-                          null,
-                          2
-                        )
-                      )
-                    }}
-                  >
-                    <Code className='mr-2 h-4 w-4' />
-                    {t('New Format Template')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    onClick={() => field.onChange('')}
-                  >
-                    {t('Clear')}
-                  </Button>
-                </div>
-              </div>
-              <FormControl>
-                <JsonCodeEditor
-                  value={field.value || ''}
-                  onChange={field.onChange}
-                  name={field.name}
-                  onBlur={field.onBlur}
-                  textareaRef={field.ref}
-                  disabled={sensitiveLocked || isSubmitting}
-                  placeholder={t(
-                    'Override request parameters. Cannot override stream parameter.'
-                  )}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
 
         <FormField
           control={form.control}
@@ -3190,33 +3197,35 @@ export function ChannelMutateDrawer({
                       selected={currentModelsArray}
                       onChange={handleModelsChange}
                       placeholder={t('Select models or add custom ones')}
-                      allowCreate
+                      allowCreate={!isSearchChannel}
                       createLabel='Add custom model "{{value}}"'
                       maxVisibleChips={8}
                       copyChipOnClick
                     />
                   </FormControl>
-                  <div className='text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs'>
-                    <Route className='size-3.5 shrink-0' aria-hidden='true' />
-                    {mappingCount > 0 && (
-                      <span>
-                        {t('{{count}} model(s) redirected', {
-                          count: mappingCount,
-                        })}
-                      </span>
-                    )}
-                    <Button
-                      type='button'
-                      variant='link'
-                      size='sm'
-                      className='h-auto p-0 text-xs'
-                      onClick={() => setConfigurationSection('routing')}
-                    >
-                      {mappingCount > 0
-                        ? t('Edit mapping')
-                        : t('Set up model redirects')}
-                    </Button>
-                  </div>
+                  {!isSearchChannel && (
+                    <div className='text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs'>
+                      <Route className='size-3.5 shrink-0' aria-hidden='true' />
+                      {mappingCount > 0 && (
+                        <span>
+                          {t('{{count}} model(s) redirected', {
+                            count: mappingCount,
+                          })}
+                        </span>
+                      )}
+                      <Button
+                        type='button'
+                        variant='link'
+                        size='sm'
+                        className='h-auto p-0 text-xs'
+                        onClick={() => setConfigurationSection('routing')}
+                      >
+                        {mappingCount > 0
+                          ? t('Edit mapping')
+                          : t('Set up model redirects')}
+                      </Button>
+                    </div>
+                  )}
                   {canBindTaskPlugin &&
                     canHavePluginExtensions &&
                     !showProviderPicker && (

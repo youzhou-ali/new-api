@@ -2,7 +2,9 @@ package model
 
 import (
 	"slices"
+	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 )
@@ -91,6 +93,13 @@ func candidatePassesKindFilters(ch *Channel, exists bool, modelName string, kind
 func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilter) bool {
 	switch filter.Kind {
 	case dto.FilterRequestPath:
+		if filter.RequestPath == "/v1/search" {
+			return constant.SearchChannelType(modelName) != constant.ChannelTypeUnknown &&
+				constant.SearchChannelType(modelName) == ch.Type && ch.ValidateSearchConfiguration() == nil
+		}
+		if constant.IsSearchChannel(ch.Type) {
+			return false
+		}
 		if filter.RequestPath == "" {
 			return true
 		}
@@ -140,4 +149,64 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 	default:
 		return true
 	}
+}
+
+// ValidateSearchConfiguration keeps a search product's source and cost tier
+// stable across channel selection, pinning, retries, and administrator edits.
+func (ch *Channel) ValidateSearchConfiguration() error {
+	if !constant.IsSearchChannel(ch.Type) {
+		return nil
+	}
+	for _, name := range ch.GetModels() {
+		if constant.SearchChannelType(name) != ch.Type {
+			return common.NewMessage("Search channel models must belong to its search provider")
+		}
+	}
+	mapping := strings.TrimSpace(ch.GetModelMapping())
+	if mapping != "" {
+		var models map[string]string
+		if err := common.UnmarshalJsonStr(mapping, &models); err != nil {
+			return common.NewMessage("Invalid search model mapping")
+		}
+		for name, target := range models {
+			if target != "" && name != target {
+				return common.NewMessage("Search products cannot be changed through model mapping")
+			}
+		}
+	}
+	var overrides map[string]any
+	if ch.ParamOverride != nil && strings.TrimSpace(*ch.ParamOverride) != "" {
+		if err := common.UnmarshalJsonStr(*ch.ParamOverride, &overrides); err != nil {
+			return common.NewMessage("Search channels do not support parameter overrides or body passthrough")
+		}
+	}
+	if len(overrides) != 0 || ch.GetSetting().PassThroughBodyEnabled {
+		return common.NewMessage("Search channels do not support parameter overrides or body passthrough")
+	}
+	return nil
+}
+
+// ValidateSearchUpdate checks the resulting configuration using the nonzero
+// field and non-nil pointer semantics of Channel.Update.
+func (ch *Channel) ValidateSearchUpdate(update *Channel) error {
+	if !constant.IsSearchChannel(ch.Type) && !constant.IsSearchChannel(update.Type) {
+		return nil
+	}
+	merged := *ch
+	if update.Type != 0 {
+		merged.Type = update.Type
+	}
+	if update.Models != "" {
+		merged.Models = update.Models
+	}
+	if update.ModelMapping != nil {
+		merged.ModelMapping = update.ModelMapping
+	}
+	if update.ParamOverride != nil {
+		merged.ParamOverride = update.ParamOverride
+	}
+	if update.Setting != nil {
+		merged.Setting = update.Setting
+	}
+	return merged.ValidateSearchConfiguration()
 }

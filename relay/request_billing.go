@@ -8,7 +8,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -60,6 +62,9 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 	}
+	if info.RelayFormat == types.RelayFormatSearch && (info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.EstimatedBillingUnit != billingexpr.BillingUnitRequest) {
+		return types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgSearchFixedPriceRequired)), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	if priceData.FreeModel {
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))
 		return nil
@@ -76,6 +81,9 @@ func RefundFailedRequestBilling(c *gin.Context, info *relaycommon.RelayInfo, api
 	apiErr = service.NormalizeViolationFeeError(apiErr)
 	if info.Billing != nil {
 		info.Billing.Refund(c)
+	}
+	if info.RelayFormat == types.RelayFormatSearch {
+		return apiErr
 	}
 	service.ChargeViolationFeeIfNeeded(c, info, apiErr)
 	return apiErr

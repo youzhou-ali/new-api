@@ -90,12 +90,21 @@ func init() {
 			OwnedBy: "midjourney",
 		})
 	}
+	for _, channelType := range []int{constant.ChannelTypeTavily, constant.ChannelTypeBraveSearch, constant.ChannelTypeBochaSearch, constant.ChannelTypeBaiduSearch} {
+		for _, name := range constant.SearchModels(channelType) {
+			openAIModels = append(openAIModels, dto.OpenAIModels{Id: name, Object: "model", Created: 1626777600, OwnedBy: constant.GetChannelTypeName(channelType)})
+		}
+	}
 	openAIModelsMap = make(map[string]dto.OpenAIModels)
 	for _, aiModel := range openAIModels {
 		openAIModelsMap[aiModel.Id] = aiModel
 	}
 	channelId2Models = make(map[int][]string)
 	for i := 1; i <= constant.ChannelTypeDummy; i++ {
+		if constant.IsSearchChannel(i) {
+			channelId2Models[i] = constant.SearchModels(i)
+			continue
+		}
 		apiType, success := common.ChannelType2APIType(i)
 		if !success || apiType == constant.APITypeAIProxyLibrary {
 			if plugin, ok := jsplugin.DefaultRegistry.GetByChannelType(i); ok {

@@ -1469,6 +1469,7 @@ export interface ModelDetailsContentProps {
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
+  const isSearch = props.model.supported_endpoint_types?.includes('search')
   const { t } = useTranslation()
   const showRechargePrice = props.showRechargePrice ?? false
 
@@ -1491,8 +1492,15 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
       <ModelHeader model={props.model} />
 
       <Tabs defaultValue='overview' className='gap-4'>
-        <TabsList className='bg-muted/60 grid w-full grid-cols-3 gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto'>
-          {TAB_VALUES.map((value) => {
+        <TabsList
+          className={cn(
+            'bg-muted/60 grid w-full gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto',
+            isSearch ? 'grid-cols-2' : 'grid-cols-3'
+          )}
+        >
+          {TAB_VALUES.filter(
+            (value) => !isSearch || value !== 'performance'
+          ).map((value) => {
             const Icon = TAB_META[value].icon
             return (
               <TabsTrigger
@@ -1508,7 +1516,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
         </TabsList>
 
         <TabsContent value='overview' className='space-y-6 outline-none'>
-          <OverviewSummaryGrid model={props.model} />
+          {!isSearch && <OverviewSummaryGrid model={props.model} />}
 
           <section className='bg-card/60 space-y-5 rounded-xl border p-4 shadow-sm'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
@@ -1547,9 +1555,11 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
           <ModelBackendDetailsSection model={props.model} />
         </TabsContent>
 
-        <TabsContent value='performance' className='outline-none'>
-          <ModelDetailsPerformance model={props.model} />
-        </TabsContent>
+        {!isSearch && (
+          <TabsContent value='performance' className='outline-none'>
+            <ModelDetailsPerformance model={props.model} />
+          </TabsContent>
+        )}
 
         <TabsContent value='api' className='outline-none'>
           <ModelDetailsApi

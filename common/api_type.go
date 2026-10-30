@@ -85,7 +85,7 @@ func ChannelType2APIType(channelType int) (int, bool) {
 	if apiType == -1 {
 		// Task plugin channels are served by the task relay and must never
 		// fall back to the OpenAI adaptor.
-		if channelType == constant.ChannelTypeTaskPlugin {
+		if channelType == constant.ChannelTypeTaskPlugin || constant.IsSearchChannel(channelType) {
 			return -1, false
 		}
 		return constant.APITypeOpenAI, false

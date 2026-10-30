@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -149,6 +150,59 @@ func TestUpdateChannelRejectsStatusField(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.False(t, response.Success)
+}
+
+func TestSearchChannelEditsCannotBypassProductRestrictions(t *testing.T) {
+	setupTaskPluginBindChannelTest(t)
+	channel := &model.Channel{
+		Type: constant.ChannelTypeTavily, Models: "tavily-search", Group: "default",
+		Name: "search", Tag: common.GetPointer("search"),
+	}
+	require.NoError(t, model.DB.Create(channel).Error)
+	cases := []struct {
+		field, value string
+	}{
+		{"models", "brave-search"},
+		{"model_mapping", `{"tavily-search":"tavily-search-advanced"}`},
+		{"param_override", `{"search_depth":"advanced"}`},
+	}
+	for _, mode := range []string{"patch without type", "tag edit"} {
+		for _, test := range cases {
+			t.Run(mode+"/"+test.field, func(t *testing.T) {
+				body := map[string]any{test.field: test.value}
+				if mode == "patch without type" {
+					body["id"] = channel.Id
+				} else {
+					body["tag"] = "search"
+				}
+				encoded, err := common.Marshal(body)
+				require.NoError(t, err)
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Set("id", 1)
+				ctx.Set("role", common.RoleRootUser)
+				ctx.Request = httptest.NewRequest(http.MethodPut, "/api/channel", bytes.NewReader(encoded))
+				ctx.Request.Header.Set("Content-Type", "application/json")
+				if mode == "patch without type" {
+					UpdateChannel(ctx)
+				} else {
+					EditTagChannels(ctx)
+				}
+				var response struct {
+					Success bool `json:"success"`
+				}
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+				assert.False(t, response.Success, recorder.Body.String())
+				stored, err := model.GetChannelById(channel.Id, false)
+				require.NoError(t, err)
+				assert.Equal(t, "tavily-search", stored.Models)
+				assert.Empty(t, stored.GetModelMapping())
+				assert.Empty(t, stored.GetParamOverride())
+			})
+		}
+	}
+	assert.NoError(t, channel.ValidateSearchUpdate(&model.Channel{Name: "renamed"}))
+	assert.Error(t, channel.ValidateSearchUpdate(&model.Channel{Setting: common.GetPointer(`{"pass_through_body_enabled":true}`)}))
 }
 
 func TestChannelStatusValidation(t *testing.T) {

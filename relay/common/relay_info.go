@@ -732,6 +732,10 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 	case types.RelayFormatDeepSeekTools:
 		info = genBaseRelayInfo(c, request)
 		info.RelayFormat = types.RelayFormatDeepSeekTools
+	case types.RelayFormatSearch:
+		info = genBaseRelayInfo(c, request)
+		info.RelayFormat = types.RelayFormatSearch
+		info.ForcePreConsume = true
 	case types.RelayFormatTask:
 		info = genBaseRelayInfo(c, nil)
 		info.TaskRelayInfo = &TaskRelayInfo{}

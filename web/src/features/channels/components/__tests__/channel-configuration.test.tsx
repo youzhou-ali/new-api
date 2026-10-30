@@ -49,7 +49,8 @@ import {
 } from '../../constants'
 import { channelSchema, type Channel } from '../../types'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
-import { ChannelsProvider } from '../channels-provider'
+import { ChannelsProvider, useChannels } from '../channels-provider'
+import { ChannelTestDialog } from '../dialogs/channel-test-dialog'
 import { ChannelMutateDrawer } from '../drawers/channel-mutate-drawer'
 
 const originalAuth = useAuthStore.getState().auth
@@ -176,6 +177,8 @@ beforeEach(() => {
             22: 'https://fastgpt.server.example/api/openapi',
             24: 'https://gemini.server.example',
             43: 'https://deepseek.server.example',
+            64: 'https://api.tavily.com',
+            67: 'https://qianfan.baidubce.com',
             45: 'https://volcengine.server.example',
           },
         },
@@ -3029,3 +3032,91 @@ test('AWS interface selection is disabled without sensitive channel write permis
     await screen.findByRole('combobox', { name: 'AWS API' })
   ).toBeDisabled()
 })
+
+test.each([
+  [64, 'tavily-search', 'tavily-search-advanced', 'https://api.tavily.com'],
+  [67, 'baidu-search', 'baidu-search', 'https://qianfan.baidubce.com'],
+] as const)(
+  'search channel type %s offers its own products and hides unsupported mapping and parameter overrides',
+  async (type, model, option, baseURL) => {
+    editingChannel = {
+      ...editingChannel,
+      type,
+      models: model,
+      base_url: '',
+    }
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    expect(screen.getByRole('textbox', { name: 'Base URL' })).toHaveAttribute(
+      'placeholder',
+      baseURL
+    )
+    const models = within(screen.getByRole('group', { name: 'Models' }))
+    await user.click(
+      models.getByRole('combobox', { name: 'Select models or add custom ones' })
+    )
+    expect(screen.getByRole('option', { name: option })).toBeVisible()
+    expect(
+      screen.queryByRole('option', { name: 'custom-model' })
+    ).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(
+      screen.queryByRole('button', { name: 'Set up model redirects' })
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))
+    expect(
+      screen.queryByRole('group', { name: 'Model Mapping' })
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+    expect(screen.queryByText('Parameter Override')).not.toBeInTheDocument()
+    expect(screen.getByText('Request Header Override')).toBeVisible()
+  }
+)
+
+function SearchTestTrigger() {
+  const channels = useChannels()
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        type='button'
+        onClick={() => {
+          channels.setCurrentRow(editingChannel)
+          setOpen(true)
+        }}
+      >
+        Open search test
+      </button>
+      <ChannelTestDialog open={open} onOpenChange={setOpen} />
+    </>
+  )
+}
+
+test.each([
+  [64, 'tavily-search'],
+  [65, 'brave-search'],
+  [66, 'bocha-search'],
+  [67, 'baidu-search'],
+] as const)(
+  'search channel type %s disables streaming in automatic endpoint tests',
+  async (type, model) => {
+    editingChannel = { ...editingChannel, type, models: model }
+    const user = userEvent.setup()
+    render(
+      <QueryClientProvider client={client}>
+        <ChannelsProvider>
+          <SearchTestTrigger />
+        </ChannelsProvider>
+      </QueryClientProvider>
+    )
+    await user.click(screen.getByRole('button', { name: 'Open search test' }))
+    expect(screen.getByRole('switch', { name: 'Stream Mode' })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    )
+    expect(
+      screen.getByRole('switch', { name: 'Stream Mode' })
+    ).not.toBeChecked()
+  }
+)

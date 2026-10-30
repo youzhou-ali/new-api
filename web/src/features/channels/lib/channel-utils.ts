@@ -56,6 +56,10 @@ export function getChannelTypeIcon(type: number): string {
     60: 'NewAPI', // New API
     62: 'Vllm', // vLLM
     63: 'SGLang', // SGLang
+    64: 'Tavily', // Tavily
+    65: 'Brave', // Brave Search
+    66: 'Bocha', // Bocha Search
+    67: 'Baidu', // Baidu Search
     3: 'Azure', // Azure
 
     // Anthropic
