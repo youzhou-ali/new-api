@@ -534,3 +534,58 @@ func TestApplyWebSocketSubprotocolAuthorizationReadsRepeatedHeaders(t *testing.T
 	assert.True(t, applyWebSocketSubprotocolAuthorization(header))
 	assert.Equal(t, "Bearer sk-later-field", header.Get("Authorization"))
 }
+
+func TestTokenAuthDistinguishesExhaustedQuota(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	previousLogType := common.LogDatabaseType()
+	t.Cleanup(func() { common.SetLogDatabaseType(previousLogType) })
+	t.Setenv("LOG_SQL_DSN", "")
+	require.NoError(t, model.InitLogDB())
+	require.NoError(t, i18n.Init())
+	require.NoError(t, model.DB.AutoMigrate(&model.Token{}))
+	for _, tc := range []struct {
+		name       string
+		status     int
+		quota      int
+		expires    int64
+		wantStatus int
+		wantCode   string
+	}{
+		{"exhausted", common.TokenStatusExhausted, 0, -1, http.StatusForbidden, "token_quota_exhausted"},
+		{"zero", common.TokenStatusEnabled, 0, -1, http.StatusForbidden, "token_quota_exhausted"},
+		{"negative", common.TokenStatusEnabled, -2, -1, http.StatusForbidden, "token_quota_exhausted"},
+		{"disabled", common.TokenStatusDisabled, 0, -1, http.StatusUnauthorized, ""},
+		{"expired-status", common.TokenStatusExpired, 0, -1, http.StatusUnauthorized, ""},
+		{"expired-time", common.TokenStatusEnabled, 0, time.Now().Add(-time.Hour).Unix(), http.StatusUnauthorized, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := strings.ReplaceAll(tc.name, "-", "")
+			token := model.Token{UserId: 1, Key: key, Status: tc.status, RemainQuota: tc.quota, ExpiredTime: tc.expires}
+			require.NoError(t, model.DB.Create(&token).Error)
+			_, err := model.ValidateUserToken(key)
+			require.ErrorIs(t, err, model.ErrTokenInvalid)
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			c.Request.Header.Set("Authorization", "Bearer sk-"+key)
+			c.Request.Header.Set("Accept-Language", "zh-CN")
+			c.Set(common.RequestIdKey, "credits-auth")
+			TokenAuth()(c)
+			require.True(t, c.IsAborted())
+			assert.Equal(t, tc.wantStatus, response.Code)
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
+			if tc.wantCode != "" {
+				assert.Equal(t, tc.wantCode, body.Error.Code)
+				assert.Equal(t, "token quota exhausted (request id: credits-auth)", body.Error.Message)
+			} else {
+				assert.NotEqual(t, "token_quota_exhausted", body.Error.Code)
+			}
+		})
+	}
+}
