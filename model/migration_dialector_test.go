@@ -84,6 +84,75 @@ func TestMigrationSchemaStability(t *testing.T) {
 			recorder := &migrationSQLRecorder{}
 			db = db.Session(&gorm.Session{Logger: recorder})
 
+			t.Run("log_usage_time_index", func(t *testing.T) {
+				const table = "migration_log_usage_test"
+				const indexName = "idx_logs_usage_tag_created_at"
+				versionSQL := "SELECT version()"
+				if dialect == "sqlite" {
+					versionSQL = "SELECT sqlite_version()"
+				}
+				var version string
+				require.NoError(t, db.Raw(versionSQL).Scan(&version).Error)
+				t.Logf("database version: %s", version)
+				t.Cleanup(func() { _ = db.Migrator().DropTable(table) })
+				tableDB := db.Table(table).Session(&gorm.Session{})
+				require.NoError(t, tableDB.AutoMigrate(&Log{}))
+				require.True(t, tableDB.Migrator().HasIndex(&Log{}, indexName), "fresh log databases need the space/time index: %v", recorder.schemaMutations())
+				// The released schema has every current column and index except this
+				// new lookup index. Retain its data and all existing indexes on upgrade.
+				require.NoError(t, tableDB.Migrator().DropIndex(&Log{}, indexName))
+				entries := []Log{
+					{UserId: 1, CreatedAt: 100, Type: LogTypeConsume, UsageTag: "space-a", UsageRef: "old-run", Quota: 10},
+					{UserId: 1, CreatedAt: 200, Type: LogTypeConsume, UsageTag: "space-a", UsageRef: "new-run", Quota: 20},
+					{UserId: 2, CreatedAt: 200, Type: LogTypeConsume, UsageTag: "space-b", UsageRef: "other-run", Quota: 30},
+				}
+				require.NoError(t, tableDB.Create(&entries).Error)
+				originalIndexes, err := tableDB.Migrator().GetIndexes(&Log{})
+				require.NoError(t, err)
+				require.NoError(t, tableDB.AutoMigrate(&Log{}))
+				recorder.reset()
+				require.NoError(t, tableDB.AutoMigrate(&Log{}))
+				assert.Empty(t, recorder.schemaMutations(), "restarting must not repeat the migration")
+				indexes, err := tableDB.Migrator().GetIndexes(&Log{})
+				require.NoError(t, err)
+				byName := make(map[string]gorm.Index, len(indexes))
+				for _, index := range indexes {
+					byName[index.Name()] = index
+				}
+				index, ok := byName[indexName]
+				require.True(t, ok)
+				columns := index.Columns()
+				if dialect == "postgres" {
+					// PostgreSQL GetIndexes does not preserve index key order.
+					require.NoError(t, db.Raw(`
+SELECT attribute.attname
+FROM pg_catalog.pg_index AS index_meta
+CROSS JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS index_column(attnum, ordinal_position)
+JOIN pg_catalog.pg_attribute AS attribute
+  ON attribute.attrelid = index_meta.indrelid AND attribute.attnum = index_column.attnum
+WHERE index_meta.indexrelid = to_regclass(?)
+ORDER BY index_column.ordinal_position
+`, indexName).Scan(&columns).Error)
+				}
+				assert.Equal(t, []string{"usage_tag", "created_at"}, columns)
+				for _, original := range originalIndexes {
+					preserved, ok := byName[original.Name()]
+					require.True(t, ok, "existing index %s must remain", original.Name())
+					assert.ElementsMatch(t, original.Columns(), preserved.Columns())
+					originalUnique, originalKnown := original.Unique()
+					preservedUnique, preservedKnown := preserved.Unique()
+					assert.Equal(t, originalKnown, preservedKnown)
+					assert.Equal(t, originalUnique, preservedUnique)
+				}
+				var saved []Log
+				require.NoError(t, tableDB.Order("id").Find(&saved).Error)
+				assert.Equal(t, entries, saved)
+				var quota int64
+				require.NoError(t, tableDB.Where("usage_tag = ? AND created_at >= ? AND created_at <= ?", "space-a", 150, 250).
+					Select("sum(quota)").Scan(&quota).Error)
+				assert.EqualValues(t, 20, quota)
+			})
+
 			t.Run("identity_and_indexes", func(t *testing.T) {
 				const table = "migration_identity_test"
 				t.Cleanup(func() { _ = db.Migrator().DropTable(table) })

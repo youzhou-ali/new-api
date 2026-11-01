@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -57,7 +58,7 @@ func sanitizeClickHouseLikePattern(input string) (string, error) {
 type Log struct {
 	Id                int    `json:"id" gorm:"index:idx_created_at_id,priority:2;index:idx_user_id_id,priority:2"`
 	UserId            int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
-	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type"`
+	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type;index:idx_logs_usage_tag_created_at,priority:2"`
 	Type              int    `json:"type" gorm:"index:idx_created_at_type"`
 	Content           string `json:"content"`
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
@@ -75,6 +76,8 @@ type Log struct {
 	Ip                string `json:"ip" gorm:"index;default:''"`
 	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
+	UsageTag          string `json:"usage_tag" gorm:"type:varchar(64);index;index:idx_logs_usage_tag_created_at,priority:1;default:''"`
+	UsageRef          string `json:"usage_ref" gorm:"type:varchar(64);default:''"`
 	Other             string `json:"other"`
 }
 
@@ -313,6 +316,8 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		}(),
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
+		UsageTag:          c.GetString(common.UsageTagKey),
+		UsageRef:          c.GetString(common.UsageRefKey),
 		Other:             otherStr,
 	}
 	err := createLog(log)
@@ -379,6 +384,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		}(),
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
+		UsageTag:          c.GetString(common.UsageTagKey),
+		UsageRef:          c.GetString(common.UsageRefKey),
 		Other:             otherStr,
 	}
 	err := createLog(log)
@@ -486,6 +493,7 @@ type LogFilter struct {
 	Group             string
 	RequestId         string
 	UpstreamRequestId string
+	UsageTag          string
 }
 
 func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
@@ -504,6 +512,9 @@ func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
 	}
 	if f.RequestId != "" {
 		tx = tx.Where("logs.request_id = ?", f.RequestId)
+	}
+	if f.UsageTag != "" {
+		tx = tx.Where("logs.usage_tag = ?", f.UsageTag)
 	}
 	if f.UpstreamRequestId != "" {
 		tx = tx.Where("logs.upstream_request_id = ?", f.UpstreamRequestId)
@@ -686,7 +697,7 @@ type Stat struct {
 	Tpm   int `json:"tpm"`
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, usageTag string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 
 	// 为rpm和tpm创建单独的查询
@@ -721,6 +732,11 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	if group != "" {
 		tx = tx.Where(logGroupCol+" = ?", group)
 		rpmTpmQuery = rpmTpmQuery.Where(logGroupCol+" = ?", group)
+	}
+
+	if usageTag != "" {
+		tx = tx.Where("usage_tag = ?", usageTag)
+		rpmTpmQuery = rpmTpmQuery.Where("usage_tag = ?", usageTag)
 	}
 
 	tx = tx.Where("type = ?", LogTypeConsume)
@@ -811,4 +827,52 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+type UsageTagStat struct {
+	UsageTag string `json:"usage_tag"`
+	Quota    int64  `json:"quota"`
+	Count    int64  `json:"count"`
+}
+
+type UsageRefStat struct {
+	UsageRef  string `json:"usage_ref"`
+	ModelName string `json:"model_name"`
+	Quota     int64  `json:"quota"`
+	Count     int64  `json:"count"`
+}
+
+func SumUserUsageTags(userID int, filter LogFilter) ([]UsageTagStat, error) {
+	query, err := filter.apply(LOG_DB.Model(&Log{}).Where("logs.user_id = ?", userID))
+	if err != nil {
+		return nil, err
+	}
+	rows := []UsageTagStat{}
+	err = query.Select("usage_tag, COALESCE(sum(quota), 0) AS quota, count(*) AS count").
+		Group("usage_tag").Order("quota DESC, usage_tag ASC").Scan(&rows).Error
+	if err != nil {
+		common.SysError(common.LogText("failed to query log stat: %s", err.Error()))
+		return nil, common.NewMessage("Failed to query statistics")
+	}
+	return rows, nil
+}
+
+var ErrUsageRefsLimit = errors.New("too many usage references; shorten the time range")
+
+func SumUserUsageRefs(userID int, filter LogFilter) ([]UsageRefStat, error) {
+	query, err := filter.apply(LOG_DB.Model(&Log{}).Where("logs.user_id = ?", userID))
+	if err != nil {
+		return nil, err
+	}
+	rows := []UsageRefStat{}
+	err = query.Select("usage_ref, model_name, COALESCE(sum(quota), 0) AS quota, count(*) AS count").
+		Group("usage_ref, model_name").Order("usage_ref ASC, model_name ASC").Limit(50001).Scan(&rows).Error
+	if err != nil {
+		common.SysError(common.LogText("failed to query log stat: %s", err.Error()))
+		return nil, common.NewMessage("Failed to query statistics")
+	}
+	if len(rows) > 50000 {
+		return nil, ErrUsageRefsLimit
+	}
+	return rows, nil
 }
