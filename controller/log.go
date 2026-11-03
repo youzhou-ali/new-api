@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -25,6 +26,7 @@ func logFilterFromQuery(c *gin.Context, admin bool) model.LogFilter {
 		EndTimestamp:      endTimestamp,
 		ModelName:         c.Query("model_name"),
 		TokenName:         c.Query("token_name"),
+		UsageTag:          c.Query("usage_tag"),
 		Group:             c.Query("group"),
 		RequestId:         c.Query("request_id"),
 		UpstreamRequestId: c.Query("upstream_request_id"),
@@ -209,7 +211,7 @@ func GetLogsStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, c.Query("usage_tag"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -243,7 +245,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, c.Query("usage_tag"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -260,4 +262,38 @@ func GetLogsSelfStat(c *gin.Context) {
 		},
 	})
 	return
+}
+
+func GetLogsSelfUsageTags(c *gin.Context) { getLogsSelfUsage(c, false) }
+func GetLogsSelfUsageRefs(c *gin.Context) { getLogsSelfUsage(c, true) }
+
+func getLogsSelfUsage(c *gin.Context, byRef bool) {
+	filter := logFilterFromQuery(c, false)
+	if filter.Type == model.LogTypeUnknown {
+		filter.Type = model.LogTypeConsume
+	}
+	if c.GetInt("role") < common.RoleAdminUser {
+		start, err := limitLogTimeRange(filter.StartTimestamp, filter.EndTimestamp)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		filter.StartTimestamp = start
+	}
+	var rows any
+	var err error
+	if byRef {
+		rows, err = model.SumUserUsageRefs(c.GetInt("id"), filter)
+	} else {
+		rows, err = model.SumUserUsageTags(c.GetInt("id"), filter)
+	}
+	if errors.Is(err, model.ErrUsageRefsLimit) {
+		c.JSON(http.StatusOK, gin.H{"success": false, "code": "usage_refs_limit_exceeded", "message": err.Error()})
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, rows)
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -243,4 +244,145 @@ func TestAcquireLogExportLock(t *testing.T) {
 			releaseAgain()
 		})
 	}
+}
+
+// The same assertions exercise the new columns and SQL aggregation on fresh
+// and upgraded log databases. External instances are always loopback-only.
+func TestUsageTagsDatabaseMatrix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousConsume, previousExport := common.LogConsumeEnabled, common.DataExportEnabled
+	common.LogConsumeEnabled, common.DataExportEnabled = true, false
+	t.Cleanup(func() { common.LogConsumeEnabled, common.DataExportEnabled = previousConsume, previousExport })
+	for _, tc := range []struct {
+		kind, env string
+		typ       common.DatabaseType
+	}{
+		{"sqlite", "", common.DatabaseTypeSQLite},
+		{"mysql", "AUDIT_MYSQL_DSN", common.DatabaseTypeMySQL},
+		{"postgres", "AUDIT_POSTGRES_DSN", common.DatabaseTypePostgreSQL},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			dsn := os.Getenv(tc.env)
+			if tc.env != "" && dsn == "" {
+				t.Skip(tc.env + " is not configured")
+			}
+			for _, upgrade := range []bool{false, true} {
+				t.Run(fmt.Sprintf("upgrade=%v", upgrade), func(t *testing.T) {
+					db, _ := newAuditTestDatabase(t, tc.kind, dsn)
+					mainDB, _ := newAuditTestDatabase(t, "sqlite", "")
+					useLogExportDatabases(t, mainDB, db, common.DatabaseTypeSQLite, tc.typ)
+					require.NoError(t, mainDB.AutoMigrate(&model.User{}))
+					now := time.Now().Unix()
+					if upgrade {
+						require.NoError(t, db.AutoMigrate(&releasedAuditLog{}))
+						require.NoError(t, db.Create(&releasedAuditLog{UserId: 1, Username: "alice", CreatedAt: now, Type: model.LogTypeConsume, TokenName: "alice-token", ModelName: "model", Quota: 7, RequestId: "legacy"}).Error)
+					}
+					for range 2 {
+						require.NoError(t, db.AutoMigrate(&model.Log{}))
+					}
+					require.True(t, db.Migrator().HasIndex(&model.Log{}, "idx_logs_usage_tag"))
+					require.True(t, db.Migrator().HasIndex(&model.Log{}, "idx_logs_request_id"))
+					versionSQL := "SELECT version()"
+					if tc.kind == "sqlite" {
+						versionSQL = "SELECT sqlite_version()"
+					}
+					var version string
+					require.NoError(t, db.Raw(versionSQL).Scan(&version).Error)
+					t.Logf("log database: %s %s", tc.kind, version)
+					rows := []model.Log{
+						{UserId: 1, Username: "alice", CreatedAt: now, Type: model.LogTypeConsume, TokenName: "alice-token", ModelName: "model", UsageTag: "a_one", UsageRef: "r1", Quota: 20, RequestId: "first"},
+						{UserId: 1, Username: "alice", CreatedAt: now, Type: model.LogTypeConsume, TokenName: "alice-token", ModelName: "model", UsageTag: "a_one", UsageRef: "r1", Quota: 30, RequestId: "second"},
+						{UserId: 1, Username: "alice", CreatedAt: now, Type: model.LogTypeConsume, TokenName: "alice-token", ModelName: "image", UsageTag: "a_one", UsageRef: "r1", Quota: 5, RequestId: "image"},
+						{UserId: 1, Username: "alice", CreatedAt: now, Type: model.LogTypeConsume, TokenName: "alice-token", ModelName: "model", UsageTag: "a_two", Quota: 10, RequestId: "other-space"},
+						{UserId: 1, Username: "alice", CreatedAt: now, Type: model.LogTypeError, TokenName: "alice-token", ModelName: "model", UsageTag: "a_one", Quota: 999, RequestId: "error"},
+						{UserId: 2, Username: "bob", CreatedAt: now, Type: model.LogTypeConsume, TokenName: "alice-token", ModelName: "model", UsageTag: "a_one", Quota: 999, RequestId: "another-user"},
+					}
+					require.NoError(t, db.Create(&rows).Error)
+					query := fmt.Sprintf("type=2&token_name=alice-token&start_timestamp=%d&end_timestamp=%d", now-60, now+60)
+					tags := callLogHandler(t, GetLogsSelfUsageTags, 1, common.RoleCommonUser, query)[0]
+					require.Equal(t, true, tags["success"])
+					groups := tags["data"].([]any)
+					assert.Equal(t, map[string]any{"usage_tag": "a_one", "quota": float64(55), "count": float64(3)}, groups[0])
+					assert.Equal(t, map[string]any{"usage_tag": "a_two", "quota": float64(10), "count": float64(1)}, groups[1])
+					if upgrade {
+						assert.Equal(t, map[string]any{"usage_tag": "", "quota": float64(7), "count": float64(1)}, groups[2])
+					} else {
+						assert.Len(t, groups, 2)
+					}
+					refs := callLogHandler(t, GetLogsSelfUsageRefs, 1, common.RoleCommonUser, query+"&usage_tag=a_one&model_name=model")[0]
+					assert.Equal(t, []any{map[string]any{"usage_ref": "r1", "model_name": "model", "quota": float64(50), "count": float64(2)}}, refs["data"])
+					refs = callLogHandler(t, GetLogsSelfUsageRefs, 1, common.RoleCommonUser, query+"&usage_tag=a_two")[0]
+					assert.Equal(t, []any{map[string]any{"usage_ref": "", "model_name": "model", "quota": float64(10), "count": float64(1)}}, refs["data"])
+					listed := callLogHandler(t, GetUserLogs, 1, common.RoleCommonUser, query+"&usage_tag=a_one")[0]
+					assert.EqualValues(t, 3, listed["data"].(map[string]any)["total"])
+					recorder := httptest.NewRecorder()
+					ctx, _ := gin.CreateTestContext(recorder)
+					ctx.Request = httptest.NewRequest(http.MethodGet, "/api/log/self/stat?"+query+"&usage_tag=a_two", nil)
+					ctx.Set("id", 1)
+					ctx.Set("username", "alice")
+					ctx.Set("role", common.RoleCommonUser)
+					GetLogsSelfStat(ctx)
+					var stat struct{ Data struct{ Quota int } }
+					require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &stat))
+					assert.Equal(t, 10, stat.Data.Quota)
+				})
+			}
+		})
+	}
+}
+
+func TestUsageMarkersRecordedWithoutUpstreamHeaders(t *testing.T) {
+	db, _ := newAuditTestDatabase(t, "sqlite", "")
+	useLogExportDatabases(t, db, db, common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	previousConsume, previousExport := common.LogConsumeEnabled, common.DataExportEnabled
+	common.LogConsumeEnabled, common.DataExportEnabled = true, false
+	t.Cleanup(func() { common.LogConsumeEnabled, common.DataExportEnabled = previousConsume, previousExport })
+	for _, tc := range []struct{ tag, ref, wantTag, wantRef string }{
+		{"a_One.:-", "run_12", "a_One.:-", "run_12"},
+		{"bad tag", strings.Repeat("r", 65), "", ""},
+		{strings.Repeat("a", 64), "", strings.Repeat("a", 64), ""},
+	} {
+		t.Run(tc.tag, func(t *testing.T) {
+			engine := gin.New()
+			engine.Use(middleware.UsageTags())
+			engine.POST("/call", func(c *gin.Context) {
+				assert.Empty(t, c.GetHeader(common.UsageTagKey))
+				assert.Empty(t, c.GetHeader(common.UsageRefKey))
+				c.Set("username", "alice")
+				c.Set(common.RequestIdKey, "request-"+tc.ref)
+				model.RecordConsumeLog(c, 1, model.RecordConsumeLogParams{ModelName: "model", Quota: 20})
+				model.RecordErrorLog(c, 1, 0, "model", "token", "failed", 0, 0, false, "", nil)
+				c.Status(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodPost, "/call", nil)
+			request.Header.Set(common.UsageTagKey, tc.tag)
+			request.Header.Set(common.UsageRefKey, tc.ref)
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, request)
+			assert.Equal(t, http.StatusNoContent, response.Code)
+			var logs []model.Log
+			require.NoError(t, db.Order("id DESC").Limit(2).Find(&logs).Error)
+			require.Len(t, logs, 2)
+			for _, log := range logs {
+				assert.Equal(t, tc.wantTag, log.UsageTag)
+				assert.Equal(t, tc.wantRef, log.UsageRef)
+			}
+		})
+	}
+}
+
+func TestUsageRefsLimitReturnsActionableError(t *testing.T) {
+	db, _ := newAuditTestDatabase(t, "sqlite", "")
+	useLogExportDatabases(t, db, db, common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	logs := make([]model.Log, 50001)
+	for i := range logs {
+		logs[i] = model.Log{UserId: 1, Type: model.LogTypeConsume, UsageTag: "a_one", UsageRef: fmt.Sprintf("r%d", i), ModelName: "model", Quota: 1}
+	}
+	require.NoError(t, db.CreateInBatches(logs, 200).Error)
+	body := callLogHandler(t, GetLogsSelfUsageRefs, 1, common.RoleAdminUser, "type=2&usage_tag=a_one")[0]
+	assert.Equal(t, false, body["success"])
+	assert.Equal(t, "usage_refs_limit_exceeded", body["code"])
+	assert.Contains(t, body["message"], "shorten the time range")
 }
