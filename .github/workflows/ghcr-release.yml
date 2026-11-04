@@ -1,10 +1,6 @@
 name: Build AWS release image (GHCR)
 
 on:
-  # Bootstrap workflow registration; this event never publishes an image.
-  push:
-    branches: [main]
-    paths: [.github/workflows/ghcr-release.yml]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -27,7 +23,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.repository == 'youzhou-ali/new-api' && github.event_name == 'workflow_dispatch'
+    if: github.repository == 'youzhou-ali/new-api'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
