@@ -56,6 +56,7 @@ const (
 	MsgSearchInvalidCount         = "search.invalid_count"
 	MsgSearchInvalidFreshness     = "search.invalid_freshness"
 	MsgSearchUnsupportedFreshness = "search.unsupported_freshness"
+	MsgSearchInvalidDomains       = "search.invalid_domains"
 	MsgSearchInvalidChannel       = "search.invalid_channel"
 	MsgSearchChannelOverrides     = "search.channel_overrides"
 	MsgSearchInvalidBaseURL       = "search.invalid_base_url"

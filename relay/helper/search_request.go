@@ -3,6 +3,8 @@ package helper
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -23,7 +25,7 @@ func GetAndValidateSearchRequest(c *gin.Context) (*dto.SearchRequest, error) {
 	}
 	for field := range fields {
 		switch field {
-		case "model", "query", "max_results", "freshness":
+		case "model", "query", "max_results", "freshness", "domains":
 		default:
 			return nil, errors.New(i18n.T(c, i18n.MsgSearchUnsupportedField, map[string]any{"Field": field}))
 		}
@@ -54,5 +56,23 @@ func GetAndValidateSearchRequest(c *gin.Context) (*dto.SearchRequest, error) {
 			return nil, errors.New(i18n.T(c, i18n.MsgSearchUnsupportedFreshness, map[string]any{"Model": request.Model, "Freshness": *request.Freshness}))
 		}
 	}
+	if len(request.Domains) > 20 {
+		return nil, errors.New(i18n.T(c, i18n.MsgSearchInvalidDomains))
+	}
+	domains := make([]string, 0, len(request.Domains))
+	for _, domain := range request.Domains {
+		domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+		if len(domain) > 253 || !searchDomainPattern.MatchString(domain) {
+			return nil, errors.New(i18n.T(c, i18n.MsgSearchInvalidDomains))
+		}
+		if !slices.Contains(domains, domain) {
+			domains = append(domains, domain)
+		}
+	}
+	request.Domains = domains
 	return request, nil
 }
+
+// searchDomainPattern accepts a bare host name with at least two labels;
+// internationalized names must already be punycode.
+var searchDomainPattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)

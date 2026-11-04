@@ -4038,6 +4038,15 @@
               "year"
             ],
             "description": "信息时效过滤；省略或空字符串表示不限时间，各搜索源按自身索引解释时效。百度支持 week/month/year，不支持 day，传入 day 返回 400"
+          },
+          "domains": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "maxLength": 253
+            },
+            "description": "只返回这些网站及其子域名的结果；省略或空数组表示不限。每项是主机名（国际化域名用 punycode），不带协议、路径或端口，网关转小写并去重。网关按主机名再过滤一遍上游结果，结果可能少于 max_results；Brave 使用内联 Goggles 实现"
           }
         }
       },

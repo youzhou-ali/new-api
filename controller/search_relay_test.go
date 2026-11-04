@@ -77,6 +77,7 @@ func TestUnifiedSearchProviderRequestsAndResponses(t *testing.T) {
 					assert.Equal(t, "5", r.URL.Query().Get("count"))
 					assert.Equal(t, "pw", r.URL.Query().Get("freshness"))
 					assert.Equal(t, "web", r.URL.Query().Get("result_filter"))
+					assert.False(t, r.URL.Query().Has("goggles"), "no domains leaves the request unchanged")
 				} else {
 					assert.Equal(t, "Bearer upstream-secret", r.Header.Get("Authorization"))
 					assert.Empty(t, r.Header.Get("X-Subscription-Token"))
@@ -89,6 +90,9 @@ func TestUnifiedSearchProviderRequestsAndResponses(t *testing.T) {
 					}
 					assert.NotContains(t, body, "model")
 					assert.NotContains(t, body, "api_key")
+					for _, field := range []string{"include_domains", "include", "search_filter"} {
+						assert.NotContains(t, body, field, "no domains leaves the request unchanged")
+					}
 					if tc.channelType == constant.ChannelTypeTavily {
 						depth := "basic"
 						if tc.model == "tavily-search-advanced" {
@@ -158,6 +162,15 @@ func TestUnifiedSearchValidation(t *testing.T) {
 		`{"model":"tavily-search","query":"` + strings.Repeat("word ", 51) + `"}`,
 		`{"model":"baidu-search","query":"hi","freshness":"day"}`,
 		`{"model":"baidu-search","query":"hi","edition":"pro"}`,
+		`{"model":"tavily-search","query":"hi","domains":"example.com"}`,
+		`{"model":"tavily-search","query":"hi","domains":["https://example.com"]}`,
+		`{"model":"tavily-search","query":"hi","domains":["example.com/docs"]}`,
+		`{"model":"tavily-search","query":"hi","domains":["example.com:443"]}`,
+		`{"model":"tavily-search","query":"hi","domains":["*.example.com"]}`,
+		`{"model":"tavily-search","query":"hi","domains":[""]}`,
+		`{"model":"tavily-search","query":"hi","domains":["localhost"]}`,
+		`{"model":"tavily-search","query":"hi","domains":["中国.cn"]}`,
+		`{"model":"tavily-search","query":"hi","domains":[` + strings.TrimSuffix(strings.Repeat(`"example.com",`, 21), ",") + `]}`,
 	}
 	for _, body := range cases {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -170,6 +183,56 @@ func TestUnifiedSearchValidation(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/search", strings.NewReader(`{"model":"tavily-search","query":"hi"}`))
 	_, err := helper.GetAndValidateSearchRequest(c)
 	assert.Error(t, err, "requires JSON content type")
+}
+
+func TestUnifiedSearchDomainsRestrictProvidersAndResults(t *testing.T) {
+	service.InitHttpClient()
+	urls := []string{"https://example.com/a", "https://docs.example.com/b", "https://notexample.com/c", "https://other.org/d"}
+	for _, tc := range []struct {
+		model          string
+		channelType    int
+		envelope, item string
+	}{
+		{"tavily-search", constant.ChannelTypeTavily, `{"results":[ITEMS]}`, `{"title":"Title","url":"URL","content":"Snippet"}`},
+		{"brave-search", constant.ChannelTypeBraveSearch, `{"query":{"original":"hi"},"web":{"results":[ITEMS]}}`, `{"title":"Title","url":"URL","description":"Snippet"}`},
+		{"bocha-search", constant.ChannelTypeBochaSearch, `{"code":200,"data":{"webPages":{"value":[ITEMS]}}}`, `{"name":"Title","url":"URL","snippet":"Snippet"}`},
+		{"baidu-search", constant.ChannelTypeBaiduSearch, `{"request_id":"baidu-request","references":[ITEMS]}`, `{"title":"Title","url":"URL","content":"Snippet","type":"web"}`},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			items := make([]string, 0, len(urls))
+			for _, u := range urls {
+				items = append(items, strings.ReplaceAll(tc.item, "URL", u))
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.channelType == constant.ChannelTypeBraveSearch {
+					assert.Equal(t, "$discard\n$boost,site=example.com\n$boost,site=news.cn", r.URL.Query().Get("goggles"))
+				} else {
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &body))
+					switch tc.channelType {
+					case constant.ChannelTypeTavily:
+						assert.Equal(t, []any{"example.com", "news.cn"}, body["include_domains"])
+					case constant.ChannelTypeBochaSearch:
+						assert.Equal(t, "example.com|news.cn", body["include"])
+					case constant.ChannelTypeBaiduSearch:
+						assert.Equal(t, map[string]any{"match": map[string]any{"site": []any{"example.com", "news.cn"}}}, body["search_filter"])
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, strings.Replace(tc.envelope, "ITEMS", strings.Join(items, ","), 1))
+			}))
+			defer server.Close()
+			// Host names are lowercased, lose a trailing dot and are deduplicated.
+			c, info := newSearchTestContext(t, `{"model":"`+tc.model+`","query":"hi","domains":["Example.com.","example.com","news.cn"]}`, tc.channelType, server.URL)
+			response, apiErr := relay.PerformSearch(c, info)
+			require.Nil(t, apiErr)
+			got := make([]string, 0, len(response.Results))
+			for _, result := range response.Results {
+				got = append(got, result.URL)
+			}
+			assert.Equal(t, []string{"https://example.com/a", "https://docs.example.com/b"}, got, "other sites, including look-alike suffixes, are filtered out")
+		})
+	}
 }
 
 func TestUnifiedSearchEmptyAndMalformedResponses(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -75,6 +76,9 @@ func PerformSearch(c *gin.Context, info *relaycommon.RelayInfo) (*dto.SearchResp
 		if freshness != "" {
 			params["time_range"] = freshness
 		}
+		if len(request.Domains) > 0 {
+			params["include_domains"] = request.Domains
+		}
 		body, err = common.Marshal(params)
 	case constant.ChannelTypeBraveSearch:
 		method = http.MethodGet
@@ -83,11 +87,24 @@ func PerformSearch(c *gin.Context, info *relaycommon.RelayInfo) (*dto.SearchResp
 		if freshness != "" {
 			params.Set("freshness", map[string]string{"day": "pd", "week": "pw", "month": "pm", "year": "py"}[freshness])
 		}
+		if len(request.Domains) > 0 {
+			// A generic $discard drops every result that no site rule matches.
+			var goggles strings.Builder
+			goggles.WriteString("$discard")
+			for _, domain := range request.Domains {
+				goggles.WriteString("\n$boost,site=" + domain)
+			}
+			params.Set("goggles", goggles.String())
+		}
 		baseURL.RawQuery = params.Encode()
 	case constant.ChannelTypeBochaSearch:
 		baseURL.Path += "/v1/web-search"
 		bochaFreshness := map[string]string{"": "noLimit", "day": "oneDay", "week": "oneWeek", "month": "oneMonth", "year": "oneYear"}[freshness]
-		body, err = common.Marshal(map[string]any{"query": request.Query, "count": *request.MaxResults, "freshness": bochaFreshness, "summary": false})
+		params := map[string]any{"query": request.Query, "count": *request.MaxResults, "freshness": bochaFreshness, "summary": false}
+		if len(request.Domains) > 0 {
+			params["include"] = strings.Join(request.Domains, "|")
+		}
+		body, err = common.Marshal(params)
 	case constant.ChannelTypeBaiduSearch:
 		if freshness == "day" {
 			return nil, types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgSearchUnsupportedFreshness, map[string]any{"Model": request.Model, "Freshness": freshness})), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -101,6 +118,9 @@ func PerformSearch(c *gin.Context, info *relaycommon.RelayInfo) (*dto.SearchResp
 		}
 		if freshness != "" {
 			params["search_recency_filter"] = freshness
+		}
+		if len(request.Domains) > 0 {
+			params["search_filter"] = map[string]any{"match": map[string]any{"site": request.Domains}}
 		}
 		body, err = common.Marshal(params)
 	}
@@ -148,6 +168,20 @@ func PerformSearch(c *gin.Context, info *relaycommon.RelayInfo) (*dto.SearchResp
 	results, valid := normalizeSearchResults(info.ChannelType, raw)
 	if !valid {
 		return nil, types.NewOpenAIError(errors.New(i18n.T(c, i18n.MsgSearchInvalidResponse)), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if len(request.Domains) > 0 {
+		// Providers differ on subdomains and leakage; the contract is that no
+		// other site appears, so filter by host name here.
+		results = slices.DeleteFunc(results, func(result dto.SearchResult) bool {
+			parsed, err := url.Parse(result.URL)
+			if err != nil {
+				return true
+			}
+			host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+			return !slices.ContainsFunc(request.Domains, func(domain string) bool {
+				return host == domain || strings.HasSuffix(host, "."+domain)
+			})
+		})
 	}
 	if len(results) > *request.MaxResults {
 		results = results[:*request.MaxResults]

@@ -8,10 +8,11 @@ import (
 
 // SearchRequest describes one non-streaming web search, not an LLM completion.
 type SearchRequest struct {
-	Model      string  `json:"model"`
-	Query      string  `json:"query"`
-	MaxResults *int    `json:"max_results,omitempty"`
-	Freshness  *string `json:"freshness,omitempty"`
+	Model      string   `json:"model"`
+	Query      string   `json:"query"`
+	MaxResults *int     `json:"max_results,omitempty"`
+	Freshness  *string  `json:"freshness,omitempty"`
+	Domains    []string `json:"domains,omitempty"`
 }
 
 func (r *SearchRequest) GetTokenCountMeta() *types.TokenCountMeta {
