@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import signal
 import subprocess
-import tarfile
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -31,7 +31,12 @@ class FakeDocker:
         self.schema_change = schema_change
         self.commands, self.removed = [], []
         self.objects = {}
-        self.images = {manifest["runtime_base_image"]: {"Id": "sha256:" + "5" * 64, "Os": "linux", "Architecture": "amd64"}}
+        self.images = {manifest["image_ref"]: {"Id": "sha256:" + "6" * 64, "Os": "linux", "Architecture": "amd64",
+            "RepoDigests": [manifest["image_ref"]], "Config": {"Labels": {
+                "org.opencontainers.image.revision": manifest["commit"],
+                "org.opencontainers.image.version": manifest["version"],
+                "org.opencontainers.image.source": "https://github.com/youzhou-ali/new-api",
+                "io.new-api.binary-sha256": manifest["binary_sha256"]}}}}
         for index, field in enumerate(("app_container", "db_container", "redis_container", "nginx_container"), 1):
             name = target[field]
             row = {"Id": str(index) * 64, "Name": "/" + name, "Image": "sha256:" + str(index) * 64,
@@ -67,10 +72,10 @@ class FakeDocker:
             Path(args[-1]).write_text(json.dumps(value))
             return b"snapshot captured"
         kind = args[1]
-        if kind == "build":
-            tag = args[args.index("--tag") + 1]
-            self.images[tag] = {"Id": "sha256:" + "6" * 64, "Os": "linux", "Architecture": "amd64"}
-            return b"built"
+        if kind == "pull":
+            return b"pulled"
+        if kind == "run":
+            return (self.manifest["binary_sha256"] + "  /new-api\n").encode()
         if kind == "exec":
             if "pg_dump" in args or "pg_dumpall" in args:
                 stdout.write(b"PRIVATE DATABASE BACKUP")
@@ -140,69 +145,70 @@ class PrepareTests(unittest.TestCase):
                        "nginx_file": str(self.root / "nginx.conf"), "app_service": "new-api", "app_container": "new-api",
                        "db_container": "postgres", "redis_container": "redis", "nginx_container": "nginx",
                        "app_port": 3000, "postgres_volume": "production_pg_data", "public_url": "https://example.test"}
-        self.manifest = {"format": 1, "release_id": "20261030T120000123456Z-" + "a" * 12,
+        reference = "ghcr.io/youzhou-ali/new-api@sha256:" + "f" * 64
+        self.manifest = {"format": 2, "release_id": "20261030T120000123456Z-" + "a" * 12,
                          "commit": "a" * 40, "tree": "b" * 40, "version": "v-test", "platform": "linux/amd64",
                          "database_mode": "unchanged", "runtime_base_image": "debian@sha256:" + "c" * 64,
-                         "image_tag": "local/newapi:test", "binary_sha256": digest(b"binary"),
+                         "image_ref": reference, "image_tag": reference, "binary_sha256": digest(b"binary"),
                          "frontend_assets": [{"path": "index.html", "sha256": "d" * 64}]}
-        self.files = {name: b"license" for name in prepare.MEMBERS}
-        self.files.update({"new-api": b"binary", "Dockerfile": ("FROM " + self.manifest["runtime_base_image"] +
-                          '\nCOPY new-api /new-api\nENTRYPOINT ["/new-api"]\n').encode(), ".dockerignore": b""})
-        self.archive()
         self.write_inputs()
 
     def write_inputs(self):
         (self.release / "release.json").write_text(json.dumps(self.manifest))
         (self.release / "target.json").write_text(json.dumps(self.target))
 
-    def archive(self, extra=None, link=None, duplicate=False):
-        path = self.release / "image-context.tgz"
-        with tarfile.open(path, "w:gz") as archive:
-            for name, data in self.files.items():
-                member = tarfile.TarInfo(name)
-                member.size = len(data)
-                if name == link:
-                    member.type, member.linkname, member.size = tarfile.SYMTYPE, "/production", 0
-                archive.addfile(member, io.BytesIO(data))
-            if extra:
-                archive.addfile(tarfile.TarInfo(extra), io.BytesIO())
-            if duplicate:
-                archive.addfile(tarfile.TarInfo("LICENSE"), io.BytesIO())
-        self.manifest.update(package_bytes=path.stat().st_size, package_sha256=digest(path.read_bytes()))
-
-    def test_package_exact_files_and_binary_mode(self):
+    def test_digest_manifest_loads_without_local_binary_or_build_package(self):
         target, manifest = prepare.load_inputs(self.release)
         self.assertEqual(target, self.target)
-        output = self.release / "context"
-        prepare.verify_package(self.release, manifest, output)
-        self.assertEqual({path.name for path in output.iterdir()}, prepare.MEMBERS)
-        self.assertEqual((output / "new-api").stat().st_mode & 0o777, 0o755)
-        self.assertEqual((output / "LICENSE").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(manifest["image_ref"], self.manifest["image_ref"])
+        self.assertFalse((self.release / "image-context.tgz").exists())
 
-    def test_reject_unsafe_or_duplicate_archive_members(self):
-        for options in ({"extra": "../escape"}, {"extra": "/absolute"}, {"extra": "unknown"},
-                        {"duplicate": True}, {"link": "LICENSE"}):
-            with self.subTest(options=options):
-                self.archive(**options)
-                with self.assertRaises(prepare.PrepareError):
-                    prepare.verify_package(self.release, self.manifest)
-        self.assertFalse((self.root / "escape").exists())
-
-    def test_reject_wrong_hash_size_binary_or_runtime(self):
-        for key, value in (("package_sha256", "0" * 64), ("package_bytes", 1),
-                           ("binary_sha256", "0" * 64), ("runtime_base_image", "debian@sha256:" + "0" * 64)):
-            with self.subTest(key=key), self.assertRaises(prepare.PrepareError):
-                prepare.verify_package(self.release, {**self.manifest, key: value})
-        self.files["Dockerfile"] += b"RUN echo forbidden\n"
-        self.archive()
+    def test_floating_image_wrong_namespace_and_differing_digest_are_rejected(self):
+        for reference in ("ghcr.io/youzhou-ali/new-api:latest", "ghcr.io/other/new-api@sha256:" + "f" * 64,
+                          "ghcr.io/youzhou-ali/new-api@sha256:1234"):
+            with self.subTest(reference=reference), self.assertRaises(prepare.PrepareError):
+                prepare.validate_manifest({**self.manifest, "image_ref": reference, "image_tag": reference})
         with self.assertRaises(prepare.PrepareError):
-            prepare.verify_package(self.release, self.manifest)
-        for dockerfile in ("FROM " + self.manifest["runtime_base_image"] + "\nCOPY --from=remote/image /new-api /new-api\n",
-                           "# syntax=remote/frontend\nFROM " + self.manifest["runtime_base_image"] + "\nCOPY new-api /new-api\n"):
-            self.files["Dockerfile"] = dockerfile.encode()
-            self.archive()
+            prepare.validate_manifest({**self.manifest, "image_tag": "ghcr.io/youzhou-ali/new-api@sha256:" + "e" * 64})
+
+    def test_image_platform_registry_digest_and_source_labels_must_match(self):
+        for mutation in ("platform", "digest", "revision", "version", "binary", "source"):
+            fake = FakeDocker(self.target, self.manifest)
+            image = fake.images[self.manifest["image_ref"]]
+            if mutation == "platform":
+                image["Architecture"] = "arm64"
+            elif mutation == "digest":
+                image["RepoDigests"] = []
+            else:
+                key = {"revision": "org.opencontainers.image.revision", "version": "org.opencontainers.image.version",
+                       "binary": "io.new-api.binary-sha256", "source": "org.opencontainers.image.source"}[mutation]
+                image["Config"]["Labels"][key] = "mismatch"
+            with self.subTest(mutation=mutation), self.assertRaises(prepare.PrepareError):
+                prepare.verify_image(fake, self.manifest)
+            self.assertFalse(any("pg_dump" in command for command in fake.commands))
+
+    def test_actual_binary_digest_is_checked_in_an_isolated_container(self):
+        fake = FakeDocker(self.target, self.manifest)
+        image = prepare.verify_image(fake, self.manifest)
+        self.assertEqual(image["Id"], "sha256:" + "6" * 64)
+        command = next(cmd for cmd in fake.commands if cmd[:2] == ["docker", "run"])
+        for option in ("--rm", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges"):
+            self.assertIn(option, command)
+        self.assertEqual(command[-2:], [self.manifest["image_ref"], "/new-api"])
+        with mock.patch.object(fake, "run", side_effect=[json.dumps([image]).encode(), b"0" * 64 + b"  /new-api\n"]):
             with self.assertRaises(prepare.PrepareError):
-                prepare.verify_package(self.release, self.manifest)
+                prepare.verify_image(fake, self.manifest)
+
+    def test_fetch_is_repeatable_and_never_starts_rehearsal_or_changes_production(self):
+        fake = FakeDocker(self.target, self.manifest)
+        arguments = ["prepare.py", "--release-dir", str(self.release), "--apply", "--fetch-image"]
+        with mock.patch.object(sys, "argv", arguments), mock.patch.object(prepare, "Runner", return_value=fake):
+            self.assertEqual(prepare.main(), 0)
+            self.assertEqual(prepare.main(), 0)
+        pulls = [cmd for cmd in fake.commands if cmd[:2] == ["docker", "pull"]]
+        self.assertEqual(pulls, [["docker", "pull", "--platform=linux/amd64", self.manifest["image_ref"]]] * 2)
+        self.assertFalse((self.release / "prepare-state.json").exists())
+        self.assertFalse((self.root / "backups").exists())
 
     def test_reject_database_change_before_docker(self):
         self.manifest["database_mode"] = "migrate"
@@ -236,9 +242,7 @@ class PrepareTests(unittest.TestCase):
         commands = fake.commands
         self.assertEqual(sum("db_snapshot.py" in " ".join(cmd) for cmd in commands), 3)
         self.assertEqual(sum(cmd[:3] == ["docker", "container", "restart"] for cmd in commands), 1)
-        build = next(cmd for cmd in commands if cmd[:2] == ["docker", "build"])
-        self.assertIn("--network=none", build)
-        self.assertIn("--pull=false", build)
+        self.assertFalse(any(cmd[:2] in (["docker", "build"], ["docker", "pull"]) for cmd in commands))
         network = next(cmd for cmd in commands if cmd[:3] == ["docker", "network", "create"])
         self.assertIn("--internal", network)
         for cmd in commands:

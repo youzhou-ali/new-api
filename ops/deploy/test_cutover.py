@@ -42,9 +42,10 @@ class CutoverTests(unittest.TestCase):
             "public_url": "https://example.test",
         }
         self.manifest = {
-            "format": 1, "release_id": "release-1", "commit": "a" * 40, "tree": "b" * 40,
+            "format": 2, "release_id": "release-1", "commit": "a" * 40, "tree": "b" * 40,
             "version": "v-test", "platform": "linux/amd64", "database_mode": "unchanged",
-            "image_tag": "local/new:1", "binary_sha256": "c" * 64, "package_sha256": "d" * 64,
+            "image_tag": "ghcr.io/youzhou-ali/new-api@sha256:" + "d" * 64,
+            "image_ref": "ghcr.io/youzhou-ali/new-api@sha256:" + "d" * 64, "binary_sha256": "c" * 64,
             "runtime_base_image": "local/old:1", "frontend_assets": [{"path": "static/app.js", "sha256": "e" * 64}],
         }
         raw = json.dumps(self.manifest).encode()
@@ -74,7 +75,7 @@ class CutoverTests(unittest.TestCase):
                          "Config": {"Env": ["POSTGRES_USER=test", "POSTGRES_DB=example"]}}
         self.redis = {"Id": "redis-id", "Name": "/redis", "State": {"Running": True}}
         (self.backup / "containers.original.json").write_text(json.dumps([self.app, self.database, self.redis]))
-        self.images = {"local/old:1": OLD_ID, "local/rollback:1": OLD_ID, "local/new:1": NEW_ID}
+        self.images = {"local/old:1": OLD_ID, "local/rollback:1": OLD_ID, self.manifest["image_ref"]: NEW_ID}
         self.addCleanup(patch.stopall)
         patch.object(cutover, "emit").start()
 
@@ -104,7 +105,7 @@ class CutoverTests(unittest.TestCase):
 
     def test_preflight_binds_images_and_only_replaces_application_image(self):
         instance = self.prepared_cutover()
-        self.assertEqual(instance.new_compose, self.compose.replace(b"local/old:1", b"local/new:1"))
+        self.assertEqual(instance.new_compose, self.compose.replace(b"local/old:1", self.manifest["image_ref"].encode()))
         self.assertEqual(instance.old_runtime_identity, cutover.app_runtime_identity(self.app))
         self.assertEqual(instance.postgres_id, "pg-id")
         self.assertEqual(instance.redis_id, "redis-id")

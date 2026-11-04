@@ -63,7 +63,7 @@ def validate_documents(target, manifest, prepared, manifest_bytes, target_bytes)
         public_url = urlparse(target["public_url"])
         if public_url.scheme not in ("http", "https") or not public_url.hostname or public_url.username or public_url.password:
             raise ValueError()
-        if (type(manifest["format"]) is not int or manifest["format"] != 1
+        if (type(manifest["format"]) is not int or manifest["format"] != 2
                 or manifest["database_mode"] not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"} or manifest["platform"] != "linux/amd64"):
             raise ValueError()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", manifest["release_id"]):
@@ -76,7 +76,10 @@ def validate_documents(target, manifest, prepared, manifest_bytes, target_bytes)
         for value in (manifest["image_tag"], manifest["runtime_base_image"], prepared["old_image"], prepared["rollback_image"]):
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,255}", value):
                 raise ValueError()
-        for value in (manifest["binary_sha256"], manifest["package_sha256"], prepared["config_sha256"],
+        if (not re.fullmatch(r"ghcr\.io/youzhou-ali/new-api@sha256:[0-9a-f]{64}", manifest["image_ref"])
+                or manifest["image_tag"] != manifest["image_ref"]):
+            raise ValueError()
+        for value in (manifest["binary_sha256"], prepared["config_sha256"],
                       prepared["nginx_sha256"], prepared["release_manifest_sha256"], prepared["target_sha256"]):
             if not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise ValueError()

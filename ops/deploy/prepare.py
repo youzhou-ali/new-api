@@ -20,7 +20,6 @@ import signal
 import stat
 import subprocess
 import sys
-import tarfile
 import time
 import traceback
 from urllib.parse import quote, unquote, urlsplit
@@ -30,11 +29,11 @@ class PrepareError(Exception):
     pass
 
 
-MEMBERS = {"Dockerfile", "new-api", ".dockerignore", "LICENSE", "NOTICE", "THIRD-PARTY-LICENSES.md"}
 OWNER_LABEL = "io.new-api.prepare-owner"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+GHCR_IMAGE = re.compile(r"ghcr\.io/youzhou-ali/new-api@sha256:[0-9a-f]{64}\Z")
 
 
 def require(condition, message):
@@ -73,27 +72,36 @@ def write_json(path, value, exclusive=False):
         temporary.unlink(missing_ok=True)
 
 
-def load_inputs(release_dir):
-    require(release_dir.is_absolute() and release_dir.resolve() == release_dir and release_dir.is_dir(),
-            "release-dir must be an absolute, existing directory without symlinks")
-    manifest = json.loads(regular_file(release_dir / "release.json").read_text())
-    target = json.loads(regular_file(release_dir / "target.json").read_text())
-    require(isinstance(manifest, dict) and isinstance(target, dict), "Invalid release or target manifest")
-    require(type(manifest.get("format")) is int and manifest["format"] == 1, "Unsupported release format")
+def validate_manifest(manifest):
+    require(isinstance(manifest, dict), "Invalid release manifest")
+    require(type(manifest.get("format")) is int and manifest["format"] == 2, "Unsupported release format")
     require(manifest.get("database_mode") in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"}, "Unsupported database mode")
     require(manifest.get("platform") == "linux/amd64", "Only linux/amd64 releases are supported")
     require(isinstance(manifest.get("release_id"), str) and NAME.fullmatch(manifest["release_id"]), "Invalid release ID")
     for field in ("commit", "tree"):
         require(isinstance(manifest.get(field), str) and re.fullmatch(r"[0-9a-f]{40}", manifest[field]), "Invalid source identity")
-    for field in ("package_sha256", "binary_sha256"):
-        require(isinstance(manifest.get(field), str) and SHA256.fullmatch(manifest[field]), "Invalid release digest")
-    require(type(manifest.get("package_bytes")) is int and manifest["package_bytes"] > 0, "Invalid package size")
-    require(isinstance(manifest.get("version"), str) and manifest["version"] and not any(c in manifest["version"] for c in "\r\n\0"), "Invalid version")
+    require(isinstance(manifest.get("binary_sha256"), str) and SHA256.fullmatch(manifest["binary_sha256"]), "Invalid binary digest")
+    require(isinstance(manifest.get("version"), str) and manifest["version"] and not any(c.isspace() or c == "\0" for c in manifest["version"]), "Invalid version")
     base = manifest.get("runtime_base_image", "")
     require(isinstance(base, str) and re.fullmatch(r"[a-z0-9][a-z0-9./_:\-]*@sha256:[0-9a-f]{64}", base), "Runtime base must be digest-pinned")
-    tag = manifest.get("image_tag", "")
-    require(isinstance(tag, str) and re.fullmatch(r"[a-z0-9][a-z0-9./_:\-]*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag), "Invalid release image tag")
+    image = manifest.get("image_ref", "")
+    require(isinstance(image, str) and GHCR_IMAGE.fullmatch(image), "Release image must be a GHCR sha256 digest")
+    require(manifest.get("image_tag") == image, "Release image reference differs from digest")
     require(isinstance(manifest.get("frontend_assets"), list) and manifest["frontend_assets"], "Missing frontend asset evidence")
+    for asset in manifest["frontend_assets"]:
+        require(isinstance(asset, dict) and isinstance(asset.get("path"), str) and asset["path"], "Invalid frontend asset")
+        path = Path(asset["path"])
+        require(not path.is_absolute() and ".." not in path.parts and ":" not in asset["path"], "Invalid frontend asset path")
+        require(isinstance(asset.get("sha256"), str) and SHA256.fullmatch(asset["sha256"]), "Invalid frontend asset digest")
+
+
+def load_inputs(release_dir):
+    require(release_dir.is_absolute() and release_dir.resolve() == release_dir and release_dir.is_dir(),
+            "release-dir must be an absolute, existing directory without symlinks")
+    manifest = json.loads(regular_file(release_dir / "release.json").read_text())
+    target = json.loads(regular_file(release_dir / "target.json").read_text())
+    validate_manifest(manifest)
+    require(isinstance(target, dict), "Invalid target manifest")
     for field in ("root", "compose_file", "nginx_file"):
         require(isinstance(target.get(field), str), "Missing target path")
         path = Path(target[field])
@@ -115,40 +123,23 @@ def load_inputs(release_dir):
     return target, manifest
 
 
-def verify_package(release_dir, manifest, destination=None):
-    package = regular_file(release_dir / "image-context.tgz")
-    require(package.stat().st_size == manifest["package_bytes"], "Package size mismatch")
-    require(file_hash(package) == manifest["package_sha256"], "Package digest mismatch")
-    with tarfile.open(package, "r:gz") as archive:
-        members = archive.getmembers()
-        require(len(members) == len(MEMBERS) and {m.name for m in members} == MEMBERS,
-                "Archive members do not match the exact release allowlist")
-        require(all(m.isfile() and not m.issparse() for m in members), "Archive contains a non-regular or sparse member")
-        dockerfile = archive.extractfile("Dockerfile").read().decode("utf-8")
-        require(not re.search(r"^\s*#\s*(?:syntax|escape)\s*=", dockerfile, re.IGNORECASE | re.MULTILINE),
-                "Dockerfile parser directives are not supported")
-        lines = dockerfile.replace("\\\n", " ").splitlines()
-        instructions = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
-        from_lines = [line for line in instructions if line.split()[0].upper() == "FROM"]
-        require(from_lines == ["FROM " + manifest["runtime_base_image"]], "Dockerfile must use exactly the pinned runtime base")
-        require(all(line.split()[0].upper() in {"FROM", "LABEL", "COPY", "EXPOSE", "WORKDIR", "ENTRYPOINT"}
-                    for line in instructions), "Dockerfile contains an unsupported instruction")
-        copies = [line for line in instructions if line.split()[0].upper() == "COPY"]
-        require("COPY new-api /new-api" in copies and all(line in {
-                    "COPY new-api /new-api", "COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/"
-                } for line in copies), "Dockerfile may only copy the verified local application and licenses")
-        binary_hash = hashlib.sha256()
-        with archive.extractfile("new-api") as binary:
-            for block in iter(lambda: binary.read(1024 * 1024), b""):
-                binary_hash.update(block)
-        require(binary_hash.hexdigest() == manifest["binary_sha256"], "Binary digest mismatch")
-        if destination is not None:
-            destination.mkdir(mode=0o700)
-            # Never let tarfile apply archive paths, owners, modes or links.
-            for member in members:
-                with archive.extractfile(member) as source, (destination / member.name).open("xb") as output:
-                    os.fchmod(output.fileno(), 0o755 if member.name == "new-api" else 0o600)
-                    shutil.copyfileobj(source, output)
+def verify_image(runner, manifest):
+    validate_manifest(manifest)
+    reference = manifest["image_ref"]
+    image = json.loads(runner.run(["docker", "image", "inspect", reference]))[0]
+    require(IMAGE_ID.fullmatch(image.get("Id", "")) and image.get("Os") == "linux"
+            and image.get("Architecture") == "amd64", "Release image identity or platform mismatch")
+    require(reference in image.get("RepoDigests", []), "Pulled image digest does not match the release")
+    labels = image.get("Config", {}).get("Labels", {}) or {}
+    expected = {"org.opencontainers.image.revision": manifest["commit"],
+                "org.opencontainers.image.version": manifest["version"],
+                "org.opencontainers.image.source": "https://github.com/" + reference.split("@", 1)[0][len("ghcr.io/"):],
+                "io.new-api.binary-sha256": manifest["binary_sha256"]}
+    require(all(labels.get(key) == value for key, value in expected.items()), "Image metadata differs from the release")
+    binary = runner.run(["docker", "run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL",
+                         "--security-opt=no-new-privileges", "--entrypoint=sha256sum", reference, "/new-api"], timeout=60)
+    require(binary.decode().split() == [manifest["binary_sha256"], "/new-api"], "Image binary digest mismatch")
+    return image
 
 
 class Runner:
@@ -419,7 +410,7 @@ def prepare(release_dir, target, manifest):
     backup = root / "backups" / manifest["release_id"]
     with target_lock(root), termination_guard():
         for path in (backup, release_dir / "prepare.json", release_dir / "prepare-state.json",
-                     release_dir / "prepare.log", release_dir / "image-context", release_dir / "rehearsal.env"):
+                     release_dir / "prepare.log", release_dir / "rehearsal.env"):
             require(not path.exists() and not path.is_symlink(), "Preparation evidence already exists; inspect it instead of rerunning")
         os.chmod(release_dir, 0o700)
         backup.parent.mkdir(mode=0o700, exist_ok=True)
@@ -440,7 +431,7 @@ def prepare(release_dir, target, manifest):
             result = None
             failure = None
             try:
-                state["stage"] = "validate-and-build"
+                state["stage"] = "validate-image"
                 write_json(state_path, state)
                 manifest_hash = file_hash(release_dir / "release.json")
                 target_hash = file_hash(release_dir / "target.json")
@@ -463,19 +454,11 @@ def prepare(release_dir, target, manifest):
                 nginx_hash = file_hash(backup / "nginx.conf.original")
                 old = original[target["app_container"]]
                 rollback = "local/newapi-rollback:" + manifest["release_id"].lower()
-                for tag in (rollback, manifest["image_tag"]):
-                    require(runner.run(["docker", "image", "inspect", tag], check=False) is None, "A release or rollback image tag already exists")
+                require(runner.run(["docker", "image", "inspect", rollback], check=False) is None, "A rollback image tag already exists")
                 runner.run(["docker", "image", "tag", old["Image"], rollback])
                 rollback_info = json.loads(runner.run(["docker", "image", "inspect", rollback]))[0]
                 require(rollback_info["Id"] == old["Image"], "Rollback tag does not identify the running image")
-                base = json.loads(runner.run(["docker", "image", "inspect", manifest["runtime_base_image"]]))[0]
-                require(base.get("Os") == "linux" and base.get("Architecture") == "amd64", "Runtime base platform mismatch")
-                verify_package(release_dir, manifest, release_dir / "image-context")
-                runner.run(["docker", "build", "--pull=false", "--network=none", "--platform=linux/amd64",
-                            "--label", "io.new-api.binary-sha256=" + manifest["binary_sha256"],
-                            "--tag", manifest["image_tag"], "."], cwd=release_dir / "image-context", timeout=300)
-                image = json.loads(runner.run(["docker", "image", "inspect", manifest["image_tag"]]))[0]
-                require(IMAGE_ID.fullmatch(image.get("Id", "")) and image.get("Os") == "linux" and image.get("Architecture") == "amd64", "Built image identity or platform mismatch")
+                image = verify_image(runner, manifest)
                 state["stage"] = "initial-database-backup"
                 write_json(state_path, state)
                 db_env = container_environment(db)
@@ -534,14 +517,22 @@ def prepare(release_dir, target, manifest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", type=Path, required=True)
-    parser.add_argument("--apply", action="store_true", help="Create backups, build locally and run an isolated rehearsal")
+    parser.add_argument("--apply", action="store_true", help="Create backups and run an isolated rehearsal")
+    parser.add_argument("--fetch-image", action="store_true", help="With --apply, pull and verify only the release image")
     args = parser.parse_args()
     os.umask(0o077)
     try:
         target, manifest = load_inputs(args.release_dir)
-        verify_package(args.release_dir, manifest)
         if not args.apply:
             print(json.dumps({"validated": True, "applied": False, "release_id": manifest["release_id"]}))
+            return 0
+        if args.fetch_image:
+            with (args.release_dir / "image-pull.log").open("ab") as log:
+                os.fchmod(log.fileno(), 0o600)
+                runner = Runner(log)
+                runner.run(["docker", "pull", "--platform=linux/amd64", manifest["image_ref"]], timeout=600)
+                image = verify_image(runner, manifest)
+            print(json.dumps({"pulled": True, "image_ref": manifest["image_ref"], "image_id": image["Id"]}))
             return 0
         result = prepare(args.release_dir, target, manifest)
         print(json.dumps({"prepared": True, "release_id": manifest["release_id"], "new_image_id": result["new_image_id"]}))

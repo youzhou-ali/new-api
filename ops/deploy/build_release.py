@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a private, verifiable release from a committed Git ref; never deploy it."""
+"""Build from a committed Git ref and bind published GHCR images; never deploy."""
 
 import argparse
 from datetime import datetime, timezone
@@ -21,7 +21,8 @@ class BuildError(Exception):
     """An operational message safe to show without subprocess output."""
 
 
-PACKAGE_FILES = (
+GHCR_REPOSITORY = "ghcr.io/youzhou-ali/new-api"
+CONTEXT_FILES = (
     "Dockerfile", "new-api", ".dockerignore", "LICENSE", "NOTICE",
     "THIRD-PARTY-LICENSES.md",
 )
@@ -275,46 +276,75 @@ def build_release(args, now=None):
         dockerfile = (
             f"FROM {runtime_base}\n"
             f'LABEL org.opencontainers.image.revision="{commit}" \\\n'
-            f'      org.opencontainers.image.version="{version}"\n'
+            f'      org.opencontainers.image.version="{version}" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/youzhou-ali/new-api" \\\n'
+            f'      io.new-api.binary-sha256="{sha256(out / "new-api")}"\n'
             "COPY new-api /new-api\n"
             "COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/\n"
             "EXPOSE 3000\nWORKDIR /data\nENTRYPOINT [\"/new-api\"]\n"
         )
         (out / "Dockerfile").write_text(dockerfile)
-        (out / ".dockerignore").write_text("*\n" + "".join("!" + name + "\n" for name in PACKAGE_FILES))
-        package = out / "image-context.tgz"
-        with tarfile.open(package, "w:gz") as archive:
-            for name in PACKAGE_FILES:
-                archive.add(out / name, arcname=name, recursive=False)
-        package.chmod(0o600)
+        (out / ".dockerignore").write_text("*\n" + "".join("!" + name + "\n" for name in CONTEXT_FILES))
         manifest = {
-            "format": 1, "release_id": release_id, "commit": commit, "tree": tree,
+            "format": 2, "release_id": release_id, "commit": commit, "tree": tree,
             "version": version, "platform": "linux/amd64", "database_mode": database_mode,
-            "runtime_base_image": runtime_base, "image_tag": "local/newapi:" + release_id.lower(),
-            "binary_sha256": sha256(out / "new-api"), "package_sha256": sha256(package),
-            "package_bytes": package.stat().st_size, "frontend_assets": assets,
+            "runtime_base_image": runtime_base, "image_repository": GHCR_REPOSITORY,
+            "binary_sha256": sha256(out / "new-api"), "frontend_assets": assets,
             "toolchain": toolchain, "dependency_identity": identity,
             "pgo_sha256": sha256(pgo),
         }
-        (out / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        (out / "release.json").chmod(0o600)
+        (out / "build.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        (out / "build.json").chmod(0o600)
+    return manifest
+
+
+def finalize_release(directory, image_ref):
+    """Bind the registry digest returned by the image publisher to this build."""
+    if not re.fullmatch(re.escape(GHCR_REPOSITORY) + r"@sha256:[0-9a-f]{64}", image_ref):
+        raise BuildError("published image must be a full GHCR digest for " + GHCR_REPOSITORY)
+    directory = Path(directory).expanduser().resolve(strict=True)
+    metadata = directory / "build.json"
+    if metadata.is_symlink() or not metadata.is_file():
+        raise BuildError("build metadata must be a regular file")
+    manifest = json.loads(metadata.read_text())
+    if manifest.get("format") != 2 or manifest.get("image_repository") != GHCR_REPOSITORY:
+        raise BuildError("unsupported build metadata or image repository")
+    if sha256(directory / "new-api") != manifest["binary_sha256"]:
+        raise BuildError("built binary changed before publication was finalized")
+    manifest.update(image_ref=image_ref, image_tag=image_ref)
+    with (directory / "release.json").open("x") as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(json.dumps(manifest, indent=2) + "\n")
     return manifest
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True)
-    parser.add_argument("--ref", required=True)
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--runtime-base", required=True)
+    parser.add_argument("--repo")
+    parser.add_argument("--ref")
+    parser.add_argument("--out")
+    parser.add_argument("--runtime-base")
     parser.add_argument("--database-mode", choices=("unchanged", "usage-tags-v1", "usage-tag-time-index-v1"), default="unchanged")
     parser.add_argument("--go", default="go")
     parser.add_argument("--bun", default="bun")
+    parser.add_argument("--finalize", metavar="DIRECTORY", help="Bind a published digest to build.json")
+    parser.add_argument("--image-ref", help="Published ghcr.io/youzhou-ali/new-api@sha256:... image")
     args = parser.parse_args(argv)
+    if args.finalize:
+        if not args.image_ref or any((args.repo, args.ref, args.out, args.runtime_base)):
+            parser.error("--finalize requires --image-ref and cannot be combined with build arguments")
+    elif args.image_ref or not all((args.repo, args.ref, args.out, args.runtime_base)):
+        parser.error("building requires --repo, --ref, --out and --runtime-base")
     old_umask = os.umask(0o077)
     try:
-        manifest = build_release(args)
-        print(json.dumps({"event": "release_built", "release_id": manifest["release_id"], "commit": manifest["commit"], "package_sha256": manifest["package_sha256"]}))
+        if args.finalize:
+            manifest = finalize_release(args.finalize, args.image_ref)
+            print(json.dumps({"event": "release_finalized", "release_id": manifest["release_id"],
+                              "commit": manifest["commit"], "image_ref": manifest["image_ref"]}))
+        else:
+            manifest = build_release(args)
+            print(json.dumps({"event": "image_context_built", "release_id": manifest["release_id"],
+                              "commit": manifest["commit"], "binary_sha256": manifest["binary_sha256"]}))
         return 0
     except BuildError as error:
         print(json.dumps({"event": "build_failed", "reason": str(error)}), file=sys.stderr)

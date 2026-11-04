@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import os
@@ -38,13 +37,14 @@ class DeploymentTests(unittest.TestCase):
     def make_release(self, root):
         release = root / "local"
         release.mkdir()
-        package = bytes(range(256)) * 32
-        (release / "image-context.tgz").write_bytes(package)
-        value = {"format": 1, "release_id": "test-0123456789ab", "commit": "a" * 40, "database_mode": "unchanged",
-                 "platform": "linux/amd64", "binary_sha256": "b" * 64,
-                 "package_sha256": hashlib.sha256(package).hexdigest(), "package_bytes": len(package)}
+        image = "ghcr.io/youzhou-ali/new-api@sha256:" + "c" * 64
+        value = {"format": 2, "release_id": "test-0123456789ab", "commit": "a" * 40, "tree": "d" * 40,
+                 "database_mode": "unchanged", "version": "test-version", "platform": "linux/amd64",
+                 "binary_sha256": "b" * 64, "runtime_base_image": "debian@sha256:" + "e" * 64,
+                 "image_ref": image, "image_tag": image,
+                 "frontend_assets": [{"path": "index.html", "sha256": "f" * 64}]}
         (release / "release.json").write_text(json.dumps(value))
-        return release, package
+        return release, value
 
     def make_recovery_fixture(self, root):
         local, _ = self.make_release(root)
@@ -76,21 +76,115 @@ class DeploymentTests(unittest.TestCase):
         return local, backup, target
 
     def test_collect_checks_complete_recovery_contents_and_recovers_from_download_interruption(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            local, backup, transport = self.make_recovery_fixture(Path(temporary))
-            with patch.object(transport, "binary", side_effect=RuntimeError("interrupted")):
-                with self.assertRaises(RuntimeError):
+        for resume_offset in (128, 73):
+            with self.subTest(offset=resume_offset), tempfile.TemporaryDirectory() as temporary:
+                local, backup, transport = self.make_recovery_fixture(Path(temporary))
+                transfer = transport.binary
+                def interrupted(source, **kwargs):
+                    if transport.uploads == 1:
+                        raise RuntimeError("interrupted after a completed chunk")
+                    return transfer(source, **kwargs)
+                with patch.object(deploy, "CHUNK_SIZE", 128), \
+                        patch.object(transport, "binary", side_effect=interrupted):
+                    with self.assertRaises(RuntimeError):
+                        deploy.collect(transport, local)
+                partial = local / "recovery-data.partial"
+                checkpoint = local / "recovery-data.partial.json"
+                self.assertEqual(partial.stat().st_size, 128)
+                self.assertEqual(partial.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
+                self.assertFalse((local / "recovery-data.tgz").exists())
+                self.assertFalse((local / "recovery.json").exists())
+                # A killed local write may leave an incomplete chunk; its actual
+                # bytes are verified before resuming at that precise offset.
+                with partial.open("r+b") as output:
+                    output.truncate(resume_offset)
+                with patch.object(deploy, "CHUNK_SIZE", 128), \
+                        patch.object(transport, "binary", wraps=transfer) as resumed:
+                    result = deploy.collect(transport, local)
+                self.assertIn("f.seek(%d)" % resume_offset, resumed.call_args_list[0].args[0])
+                self.assertTrue(all("f.seek(0)" not in call.args[0] for call in resumed.call_args_list))
+                archive = local / "recovery-data.tgz"
+                self.assertEqual(deploy.digest(archive.read_bytes()), result["sha256"])
+                self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+                self.assertEqual((local / "recovery.json").stat().st_mode & 0o777, 0o600)
+                self.assertFalse(partial.exists())
+                self.assertFalse(checkpoint.exists())
+                with tarfile.open(archive) as recovered:
+                    self.assertIn("production-final.dump", recovered.getnames())
+                    self.assertIn("data/example", recovered.getnames())
+                    self.assertNotIn("logs/example", recovered.getnames())
+                with patch.object(transport, "binary", side_effect=AssertionError("already collected")):
+                    self.assertEqual(deploy.collect(transport, local), result)
+
+    def test_collect_short_read_keeps_completed_bytes_and_checksum_mismatch_cannot_finish(self):
+        for failure in ("short-read", "wrong-bytes"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                local, backup, transport = self.make_recovery_fixture(Path(temporary))
+                transfer = transport.binary
+                def broken(source, **kwargs):
+                    data = transfer(source, **kwargs)
+                    if transport.uploads == 2:
+                        return data[:-1] if failure == "short-read" else bytes([data[0] ^ 1]) + data[1:]
+                    return data
+                with patch.object(deploy, "CHUNK_SIZE", 128), \
+                        patch.object(transport, "binary", side_effect=broken):
+                    with self.assertRaises(ValueError):
+                        deploy.collect(transport, local)
+                self.assertFalse((local / "recovery-data.tgz").exists())
+                self.assertFalse((local / "recovery.json").exists())
+                if failure == "short-read":
+                    self.assertEqual((local / "recovery-data.partial").stat().st_size, 128)
                     deploy.collect(transport, local)
-            self.assertFalse((local / "recovery-data.tgz").exists())
-            self.assertFalse((local / "recovery.json").exists())
-            result = deploy.collect(transport, local)
-            archive = local / "recovery-data.tgz"
-            self.assertEqual(deploy.digest(archive.read_bytes()), result["sha256"])
-            self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
-            with tarfile.open(archive) as recovered:
-                self.assertIn("production-final.dump", recovered.getnames())
-                self.assertIn("data/example", recovered.getnames())
-                self.assertNotIn("logs/example", recovered.getnames())
+                else:
+                    with patch.object(transport, "binary", side_effect=AssertionError("corrupt prefix")), \
+                            self.assertRaisesRegex(ValueError, "differs from remote"):
+                        deploy.collect(transport, local)
+
+    def test_collect_rejects_changed_remote_identity_and_corrupt_or_unbound_partial(self):
+        for corruption in ("remote-identity", "prefix", "oversized", "unbound"):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as temporary:
+                local, backup, transport = self.make_recovery_fixture(Path(temporary))
+                transfer = transport.binary
+                def interrupted(source, **kwargs):
+                    if transport.uploads == 1:
+                        raise RuntimeError("interrupted")
+                    return transfer(source, **kwargs)
+                with patch.object(deploy, "CHUNK_SIZE", 128), \
+                        patch.object(transport, "binary", side_effect=interrupted), self.assertRaises(RuntimeError):
+                    deploy.collect(transport, local)
+                partial = local / "recovery-data.partial"
+                if corruption == "remote-identity":
+                    remote_archive = backup / "recovery-data.tgz"
+                    data = bytearray(remote_archive.read_bytes())
+                    data[4] ^= 1  # Change gzip's timestamp, leaving the recovery tar valid.
+                    remote_archive.write_bytes(data)
+                elif corruption == "prefix":
+                    partial.write_bytes(b"wrong bytes")
+                elif corruption == "oversized":
+                    partial.write_bytes(b"x" * ((backup / "recovery-data.tgz").stat().st_size + 1))
+                else:
+                    (local / "recovery-data.partial.json").unlink()
+                before = partial.read_bytes()
+                with patch.object(transport, "binary", side_effect=AssertionError("must reject before transfer")), \
+                        self.assertRaises(ValueError):
+                    deploy.collect(transport, local)
+                self.assertEqual(partial.read_bytes(), before)
+                self.assertFalse((local / "recovery-data.tgz").exists())
+                self.assertFalse((local / "recovery.json").exists())
+
+    def test_collect_rejects_symlinked_local_outputs(self):
+        for name in ("recovery-data.tgz", "recovery-data.partial", "recovery-data.partial.json", "recovery.json"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                local, backup, transport = self.make_recovery_fixture(root)
+                protected = root / "protected"
+                protected.write_bytes(b"must remain unchanged")
+                (local / name).symlink_to(protected)
+                with patch.object(transport, "binary", side_effect=AssertionError("invalid output")), \
+                        self.assertRaises(ValueError):
+                    deploy.collect(transport, local)
+                self.assertEqual(protected.read_bytes(), b"must remain unchanged")
 
     def test_collect_rejects_missing_or_corrupt_required_backups_without_success_record(self):
         for broken in ("production-final.dump", "postgres-globals.sql", "production-after.json", "checksum"):
@@ -112,6 +206,34 @@ class DeploymentTests(unittest.TestCase):
                 archive.add(backup / "postgres-globals.sql", arcname="postgres-globals.sql")
             with self.assertRaises(RuntimeError):
                 deploy.collect(transport, local)
+            self.assertFalse((local / "recovery.json").exists())
+
+    def test_historical_backups_remain_collectible_but_cannot_stage_an_old_build_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local, backup, transport = self.make_recovery_fixture(Path(temporary))
+            value = json.loads((local / "release.json").read_text())
+            value.update(format=1, package_sha256="a" * 64)
+            value.pop("image_ref")
+            value["image_tag"] = "local/newapi:historical"
+            remote_release = backup.parent.parent / "releases" / value["release_id"]
+            for directory in (local, remote_release):
+                (directory / "release.json").write_text(json.dumps(value))
+            with self.assertRaises(ValueError):
+                deploy.stage(transport, local)
+            result = deploy.collect(transport, local)
+            self.assertEqual(result["commit"], value["commit"])
+            with tarfile.open(local / "recovery-data.tgz") as archive:
+                self.assertEqual(json.load(archive.extractfile("release.json"))["format"], 1)
+
+    def test_collect_requires_identical_local_and_remote_release_manifests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local, backup, transport = self.make_recovery_fixture(Path(temporary))
+            value = json.loads((local / "release.json").read_text())
+            value["commit"] = "c" * 40
+            (local / "release.json").write_text(json.dumps(value))
+            with self.assertRaises(RuntimeError):
+                deploy.collect(transport, local)
+            self.assertFalse((backup / "recovery-data.tgz").exists())
             self.assertFalse((local / "recovery.json").exists())
 
     def assert_additive_recovery_evidence(self, mode):
@@ -144,10 +266,10 @@ class DeploymentTests(unittest.TestCase):
     def test_usage_time_index_recovery_requires_and_collects_compatibility_evidence(self):
         self.assert_additive_recovery_evidence("usage-tag-time-index-v1")
 
-    def test_stage_reuses_verified_chunks_and_rejects_corruption(self):
+    def test_stage_uploads_only_immutable_metadata_and_fetches_digest_without_binary_transfer(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            release, package = self.make_release(root)
+            release, value = self.make_release(root)
             helpers = root / "helpers"
             helpers.mkdir()
             for name in deploy.HELPERS:
@@ -155,27 +277,52 @@ class DeploymentTests(unittest.TestCase):
             remote = root / "remote"
             remote.mkdir()
             transport = LocalTransport(remote)
-            with patch.object(deploy, "HERE", helpers), patch.object(deploy, "CHUNK_SIZE", 1024):
+            pulled = json.dumps({"pulled": True, "image_ref": value["image_ref"]}).encode()
+            with patch.object(deploy, "HERE", helpers), patch.object(deploy, "run_phase", return_value=pulled) as fetch:
                 result = deploy.stage(transport, release)
-                self.assertEqual(transport.uploads, 8)
-                self.assertEqual((Path(result["remote_directory"]) / "image-context.tgz").read_bytes(), package)
+                self.assertEqual(transport.uploads, 0)
+                self.assertEqual(result["image_ref"], value["image_ref"])
+                self.assertFalse((Path(result["remote_directory"]) / "image-context.tgz").exists())
+                fetch.assert_called_once_with(transport, value["release_id"], "fetch")
                 deploy.stage(transport, release)
-                self.assertEqual(transport.uploads, 8)
-                (Path(result["remote_directory"]) / "package.part0003").write_bytes(b"corruption")
+                self.assertEqual(transport.uploads, 0)
+                (Path(result["remote_directory"]) / "release.json").write_bytes(b"corruption")
                 with self.assertRaises(RuntimeError):
                     deploy.stage(transport, release)
-                self.assertEqual(transport.uploads, 8)
+                self.assertEqual(fetch.call_count, 2)
 
-    def test_local_package_mismatch_stops_before_remote_writes(self):
+    def test_floating_or_wrong_registry_image_stops_before_remote_writes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            release, _ = self.make_release(root)
-            (release / "image-context.tgz").write_bytes(b"changed")
+            release, value = self.make_release(root)
             transport = LocalTransport(root)
-            with self.assertRaises(ValueError):
-                deploy.stage(transport, release)
+            for reference in ("ghcr.io/youzhou-ali/new-api:latest", "docker.io/youzhou-ali/new-api@sha256:" + "c" * 64):
+                value.update(image_ref=reference, image_tag=reference)
+                (release / "release.json").write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    deploy.stage(transport, release)
             self.assertEqual(transport.uploads, 0)
             self.assertFalse((root / "releases").exists())
+
+    def test_stage_can_retry_after_process_dies_before_metadata_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            local, value = self.make_release(root)
+            remote = root / "remote"
+            remote.mkdir()
+            transport = LocalTransport(remote)
+            execute = transport.python
+            def interrupted(source, **kwargs):
+                fault = "import os\ndef stop_before_link(*args, **kwargs): os._exit(19)\nos.link=stop_before_link\n"
+                return execute(fault + source, **kwargs)
+            with patch.object(transport, "python", side_effect=interrupted):
+                with self.assertRaises(RuntimeError):
+                    deploy.stage(transport, local)
+            remote_release = remote / "releases" / value["release_id"]
+            self.assertFalse((remote_release / "release.json").exists())
+            with patch.object(deploy, "run_phase", return_value=b'{"pulled":true}'):
+                self.assertTrue(deploy.stage(transport, local)["staged"])
+            self.assertEqual((remote_release / "release.json").read_bytes(), (local / "release.json").read_bytes())
 
     def test_refuses_traversal_release_id(self):
         with self.assertRaises(ValueError):

@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 
 from ssh_transport import check_host_key, load_target
+from prepare import PrepareError, validate_manifest
 
 HERE = Path(__file__).resolve().parent
 HELPERS = ("prepare.py", "cutover.py", "db_snapshot.py")
@@ -37,16 +38,22 @@ def release_directory(target, release_id):
     return str(root / "releases" / release_id)
 
 
-def manifest(path):
+def manifest(path, *, recovery=False):
     raw = (Path(path) / "release.json").read_bytes()
     value = json.loads(raw)
-    if value.get("format") != 1 or value.get("database_mode") not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"}:
-        raise ValueError("unsupported release format or database mode")
-    if value.get("platform") != "linux/amd64" or not RELEASE_ID.fullmatch(value["release_id"]):
-        raise ValueError("invalid release target")
-    for name in ("binary_sha256", "package_sha256"):
-        if not re.fullmatch(r"[a-f0-9]{64}", value[name]):
-            raise ValueError("invalid artifact digest")
+    # Historical backups remain collectible; only new releases use GHCR images.
+    if recovery and isinstance(value, dict) and type(value.get("format")) is int and value["format"] == 1:
+        if (value.get("database_mode") not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"}
+                or value.get("platform") != "linux/amd64"
+                or not RELEASE_ID.fullmatch(value.get("release_id", ""))
+                or not re.fullmatch(r"[0-9a-f]{40}", value.get("commit", ""))
+                or any(not re.fullmatch(r"[0-9a-f]{64}", value.get(key, "")) for key in ("binary_sha256", "package_sha256"))):
+            raise ValueError("invalid historical recovery manifest")
+        return value, raw
+    try:
+        validate_manifest(value)
+    except PrepareError as error:
+        raise ValueError(str(error)) from None
     return value, raw
 
 
@@ -93,7 +100,7 @@ class Transport:
         result = subprocess.run(args, input=data, capture_output=True,
                                 env=self.env(seconds, data is not None), timeout=seconds + 25)
         if result.returncode:
-            raise RuntimeError("artifact transfer failed; inspect completed chunks before retrying stage")
+            raise RuntimeError("backup transfer failed; collect can resume verified downloaded bytes")
         return result.stdout
 
 
@@ -123,9 +130,6 @@ print(json.dumps(result))
 def stage(transport, directory):
     directory = Path(directory).resolve()
     value, release_raw = manifest(directory)
-    package = directory / "image-context.tgz"
-    if package.stat().st_size != value["package_bytes"] or digest(package.read_bytes()) != value["package_sha256"]:
-        raise ValueError("local release package differs from manifest")
     remote = release_directory(transport.target, value["release_id"])
     small = {"release.json": release_raw,
              "target.json": (json.dumps(transport.target["remote"], sort_keys=True, indent=2) + "\n").encode()}
@@ -148,66 +152,27 @@ for name,data in payload.items():
     if p.exists():
         assert p.read_bytes()==raw, 'existing staged release differs'
     else:
-        with p.open('xb') as f: f.write(raw)
+        temporary=r/(name+'.'+os.urandom(8).hex()+'.tmp')
+        try:
+            with temporary.open('xb') as f:
+                f.write(raw); f.flush(); os.fsync(f.fileno())
+            try: os.link(temporary,p)
+            except FileExistsError:
+                assert not p.is_symlink() and p.read_bytes()==raw, 'existing staged release differs'
+        finally: temporary.unlink(missing_ok=True)
 print('release metadata staged')
 """ % (remote, payload), execute=True)
-    # Complete chunks are immutable and verified. Interrupted partial chunks alone are retransmitted.
-    with package.open("rb") as stream:
-        index = 0
-        while data := stream.read(CHUNK_SIZE):
-            name = f"package.part{index:04d}"
-            expected = digest(data)
-            exists = transport.python("""
-import hashlib,pathlib
-p=pathlib.Path(%r)/%r
-assert not p.is_symlink()
-if p.exists():
-    assert p.stat().st_size==%d and hashlib.sha256(p.read_bytes()).hexdigest()==%r
-    print('complete')
-else: print('missing')
-""" % (remote, name, len(data), expected)).strip()
-            if exists == b"missing":
-                transport.binary("""
-import hashlib,os,pathlib,sys
-os.umask(0o077)
-p=pathlib.Path(%r)/%r
-assert not p.exists() and not p.is_symlink()
-data=sys.stdin.buffer.read(%d)
-assert len(data)==%d and hashlib.sha256(data).hexdigest()==%r
-partial=p.with_suffix('.partial')
-assert not partial.is_symlink()
-with partial.open('wb') as f:
-    f.write(data); f.flush(); os.fsync(f.fileno())
-os.replace(partial,p)
-""" % (remote, name, len(data) + 1, len(data), expected), data=data)
-            elif exists != b"complete":
-                raise RuntimeError("unexpected chunk status")
-            index += 1
-            print(json.dumps({"stage": "upload", "completed_chunks": index}), flush=True)
-    transport.python("""
-import hashlib,os,pathlib
-r=pathlib.Path(%r); p=r/'image-context.tgz'
-assert not p.is_symlink()
-if not p.exists():
-    tmp=r/'image-context.partial'; assert not tmp.is_symlink()
-    with tmp.open('wb') as out:
-        for i in range(%d):
-            with (r/('package.part%%04d'%%i)).open('rb') as part:
-                while chunk:=part.read(1048576): out.write(chunk)
-        out.flush(); os.fsync(out.fileno())
-    assert tmp.stat().st_size==%d and hashlib.sha256(tmp.read_bytes()).hexdigest()==%r
-    os.replace(tmp,p)
-assert p.stat().st_size==%d and hashlib.sha256(p.read_bytes()).hexdigest()==%r
-print('package verified')
-""" % (remote, index, value["package_bytes"], value["package_sha256"],
-          value["package_bytes"], value["package_sha256"]), execute=True, seconds=120)
-    return {"release_id": value["release_id"], "remote_directory": remote, "staged": True}
+    image = json.loads(run_phase(transport, value["release_id"], "fetch"))
+    return {"release_id": value["release_id"], "remote_directory": remote, "staged": True, **image}
 
 
 def run_phase(transport, release_id, phase):
     remote = release_directory(transport.target, release_id)
-    script = {"prepare": "prepare.py", "cutover": "cutover.py"}[phase]
-    command = shlex.join(["python3", remote + "/" + script, "--release-dir", remote, "--apply"])
+    script = {"fetch": "prepare.py", "prepare": "prepare.py", "cutover": "cutover.py"}[phase]
+    arguments = ["python3", remote + "/" + script, "--release-dir", remote, "--apply"]
+    if phase == "fetch":
+        arguments.append("--fetch-image")
+    command = shlex.join(arguments)
     # Verify uploaded helpers before executing; don't run mutable code from a different release.
     verify_tools = """
 import hashlib,json,pathlib
@@ -320,12 +285,14 @@ print(json.dumps({'image_id':v['Image'],'healthy':True}))
 
 
 def collect(transport, directory):
-    value, raw = manifest(directory)
+    value, raw = manifest(directory, recovery=True)
     remote = release_directory(transport.target, value["release_id"])
     info = json.loads(transport.python("""
 import hashlib,json,os,pathlib,tarfile
 os.umask(0o077)
-r=pathlib.Path(%r); c=json.loads((r/'target.json').read_text()); m=json.loads((r/'release.json').read_text())
+r=pathlib.Path(%r); c=json.loads((r/'target.json').read_text()); manifest_raw=(r/'release.json').read_bytes()
+assert hashlib.sha256(manifest_raw).hexdigest()==%r, 'local and remote release manifests differ'
+m=json.loads(manifest_raw)
 b=pathlib.Path(c['root'])/'backups'/m['release_id']; state=json.loads((b/'cutover-state.json').read_text())
 assert state['phase'] in ('success','rolled_back')
 prepared=json.loads((r/'prepare.json').read_text())
@@ -380,34 +347,81 @@ with tarfile.open(p) as archive:
             assert old.type==new.type and old.linkname==new.linkname and old.size==new.size
             if old.isfile(): assert hashlib.sha256(app.extractfile(old).read()).digest()==hashlib.sha256(archive.extractfile(new).read()).digest()
 print(json.dumps({'path':str(p),'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))
-""" % remote, execute=True, seconds=180))
+""" % (remote, digest(raw)), execute=True, seconds=180))
     destination = Path(directory) / "recovery-data.tgz"
-    if destination.exists():
-        if digest(destination.read_bytes()) != info["sha256"]:
-            raise ValueError("local recovery archive differs")
-    else:
-        partial = destination.with_suffix(".partial")
-        if partial.is_symlink():
+    partial = destination.with_suffix(".partial")
+    checkpoint = partial.with_suffix(".partial.json")
+    summary_path = Path(directory) / "recovery.json"
+    for path in (destination, partial, checkpoint, summary_path):
+        if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError("invalid local recovery path")
-        with partial.open("wb") as output:
+    if (type(info.get("bytes")) is not int or info["bytes"] <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", info.get("sha256", ""))):
+        raise ValueError("invalid remote recovery identity")
+    identity = {"path": info["path"], "bytes": info["bytes"], "sha256": info["sha256"]}
+    if checkpoint.exists() and json.loads(checkpoint.read_text()) != identity:
+        raise ValueError("remote recovery archive changed since download began")
+    if destination.exists():
+        if destination.stat().st_size != info["bytes"] or digest(destination.read_bytes()) != info["sha256"]:
+            raise ValueError("local recovery archive differs")
+        destination.chmod(0o600)
+    else:
+        if partial.exists() and not checkpoint.exists():
+            raise ValueError("partial recovery archive has no recorded remote identity")
+        if not checkpoint.exists():
+            temporary = checkpoint.with_name(checkpoint.name + "." + os.urandom(8).hex() + ".tmp")
+            try:
+                with temporary.open("x") as output:
+                    os.fchmod(output.fileno(), 0o600)
+                    output.write(json.dumps(identity, sort_keys=True) + "\n")
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, checkpoint)
+            finally:
+                temporary.unlink(missing_ok=True)
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset > info["bytes"]:
+            raise ValueError("partial recovery archive exceeds the recorded size")
+        if offset:
+            prefix_hash = hashlib.sha256()
+            with partial.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    prefix_hash.update(block)
+            remote_hash = transport.python("""
+import hashlib,pathlib
+p=pathlib.Path(%r)
+assert p.is_file() and not p.is_symlink() and p.stat().st_size==%d
+h=hashlib.sha256(); remaining=%d
+with p.open('rb') as source:
+    while remaining:
+        block=source.read(min(remaining,1048576)); assert block, 'remote recovery archive truncated'
+        h.update(block); remaining-=len(block)
+print(h.hexdigest())
+""" % (info["path"], info["bytes"], offset)).decode().strip()
+            if prefix_hash.hexdigest() != remote_hash:
+                raise ValueError("partial recovery archive differs from remote bytes")
+        with partial.open("ab") as output:
             os.fchmod(output.fileno(), 0o600)
-            for offset in range(0, info["bytes"], CHUNK_SIZE):
+            for offset in range(offset, info["bytes"], CHUNK_SIZE):
                 size = min(CHUNK_SIZE, info["bytes"] - offset)
                 data = transport.binary("import sys\nwith open(%r,'rb') as f:\n f.seek(%d); sys.stdout.buffer.write(f.read(%d))" %
                                         (info["path"], offset, size))
                 if len(data) != size:
                     raise ValueError("recovery archive download incomplete")
                 output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
+                output.flush()
+                os.fsync(output.fileno())
         if digest(partial.read_bytes()) != info["sha256"]:
             raise ValueError("recovery archive checksum mismatch")
         os.replace(partial, destination)
+    checkpoint.unlink(missing_ok=True)
     summary = {"release_id": value["release_id"], "commit": value["commit"],
                "recovery_archive": str(destination.resolve()), "sha256": info["sha256"],
                "remote_backup": str(Path(transport.target["remote"]["root"]) / "backups" / value["release_id"]),
                "logs": "retained in remote application-final.tgz"}
-    (Path(directory) / "recovery.json").write_text(json.dumps(summary, indent=2) + "\n")
+    with summary_path.open("w") as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(json.dumps(summary, indent=2) + "\n")
     return summary
 
 
@@ -426,7 +440,7 @@ def main():
         parser.error("this command requires --release")
     release_id = args.release_id
     if args.release:
-        value, _ = manifest(args.release)
+        value, _ = manifest(args.release, recovery=args.command in ("collect", "status"))
         if release_id and release_id != value["release_id"]:
             parser.error("release IDs differ")
         release_id = value["release_id"]

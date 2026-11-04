@@ -10,7 +10,6 @@ import stat
 import struct
 import subprocess
 import sys
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -115,7 +114,7 @@ class ReleaseBuildTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.repo, stderr=subprocess.DEVNULL, text=True).strip()
 
-    def test_build_uses_committed_ref_and_packages_verified_frontend_and_licenses(self):
+    def test_build_uses_committed_ref_and_creates_verified_image_context(self):
         (self.repo / "web/src.txt").write_text("uncommitted replacement")
         (self.repo / "web/bun.lock").write_text("uncommitted lock")
         (self.repo / "untracked.txt").write_text("must not be archived")
@@ -129,24 +128,29 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(manifest["release_id"], "20261030T052558123456Z-" + self.commit[:12])
         self.assertTrue(manifest["version"].startswith("v2.0.0-deploy."))
         self.assertEqual((out / "source/VERSION").read_text().strip(), manifest["version"])
-        self.assertEqual(manifest["format"], 1)
+        self.assertEqual(manifest["format"], 2)
         self.assertEqual(manifest["platform"], "linux/amd64")
         self.assertEqual(manifest["database_mode"], "unchanged")
         self.assertEqual(manifest["runtime_base_image"], RUNTIME)
-        self.assertEqual(manifest["image_tag"], "local/newapi:" + manifest["release_id"].lower())
+        self.assertEqual(manifest["image_repository"], release.GHCR_REPOSITORY)
         self.assertEqual(manifest["binary_sha256"], release.sha256(out / "new-api"))
-        self.assertEqual(manifest["package_sha256"], release.sha256(out / "image-context.tgz"))
-        self.assertEqual(manifest["package_bytes"], (out / "image-context.tgz").stat().st_size)
-        self.assertEqual(json.loads((out / "release.json").read_text()), manifest)
-        with tarfile.open(out / "image-context.tgz") as archive:
-            self.assertEqual(set(archive.getnames()), set(release.PACKAGE_FILES))
-            self.assertTrue(all(member.isfile() for member in archive.getmembers()))
-            self.assertEqual(archive.extractfile("LICENSE").read(), b"license\n")
-            self.assertEqual(archive.extractfile("NOTICE").read(), b"notice\n")
-            self.assertEqual(archive.extractfile("THIRD-PARTY-LICENSES.md").read(), b"third-party notices\n")
-            dockerfile = archive.extractfile("Dockerfile").read().decode()
+        self.assertEqual(json.loads((out / "build.json").read_text()), manifest)
+        self.assertFalse((out / "release.json").exists())
+        self.assertFalse((out / "image-context.tgz").exists())
+        self.assertEqual((out / "LICENSE").read_bytes(), b"license\n")
+        self.assertEqual((out / "NOTICE").read_bytes(), b"notice\n")
+        self.assertEqual((out / "THIRD-PARTY-LICENSES.md").read_bytes(), b"third-party notices\n")
+        allowed = {line[1:] for line in (out / ".dockerignore").read_text().splitlines() if line.startswith("!")}
+        self.assertEqual(allowed, set(release.CONTEXT_FILES))
+        self.assertNotIn("source", allowed)
+        self.assertNotIn("build.json", allowed)
+        dockerfile = (out / "Dockerfile").read_text()
         self.assertEqual([line for line in dockerfile.splitlines() if line.startswith("FROM ")], ["FROM " + RUNTIME])
         self.assertFalse(any(line.startswith(("RUN ", "ARG ", "ADD ")) for line in dockerfile.splitlines()))
+        self.assertIn('org.opencontainers.image.revision="' + self.commit + '"', dockerfile)
+        self.assertIn('org.opencontainers.image.version="' + manifest["version"] + '"', dockerfile)
+        self.assertIn('org.opencontainers.image.source="https://github.com/youzhou-ali/new-api"', dockerfile)
+        self.assertIn('io.new-api.binary-sha256="' + manifest["binary_sha256"] + '"', dockerfile)
         self.assertEqual({asset["path"] for asset in manifest["frontend_assets"]}, {"index.html", "static/index.current.js", "static/current.css"})
         for asset in manifest["frontend_assets"]:
             self.assertEqual(asset["sha256"], release.sha256(out / "source/web/dist" / asset["path"]))
@@ -162,6 +166,55 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("-trimpath", build["args"])
         self.assertTrue(any(arg.startswith("-pgo=") for arg in build["args"]))
         self.assertFalse((out / "source/web/node_modules").is_symlink())
+
+    def test_finalize_binds_only_published_project_digest_and_never_overwrites(self):
+        built = release.build_release(self.args, self.now)
+        out = Path(self.args.out)
+        for invalid in (
+            release.GHCR_REPOSITORY + ":latest",
+            release.GHCR_REPOSITORY + "@sha256:1234",
+            "ghcr.io/other/new-api@sha256:" + "a" * 64,
+            "docker.io/youzhou-ali/new-api@sha256:" + "a" * 64,
+            release.GHCR_REPOSITORY + "@sha256:" + "A" * 64,
+            release.GHCR_REPOSITORY + "@sha256:" + "a" * 64 + "\n",
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(release.BuildError):
+                release.finalize_release(out, invalid)
+            self.assertFalse((out / "release.json").exists())
+        image_ref = release.GHCR_REPOSITORY + "@sha256:" + "a" * 64
+        manifest = release.finalize_release(out, image_ref)
+        self.assertEqual(manifest, dict(built, image_ref=image_ref, image_tag=image_ref))
+        self.assertEqual(json.loads((out / "release.json").read_text()), manifest)
+        self.assertEqual(stat.S_IMODE((out / "release.json").stat().st_mode), 0o600)
+        with self.assertRaises(FileExistsError):
+            release.finalize_release(out, release.GHCR_REPOSITORY + "@sha256:" + "b" * 64)
+        self.assertEqual(json.loads((out / "release.json").read_text()), manifest)
+
+    def test_finalize_rejects_changed_binary_or_wrong_build_repository(self):
+        built = release.build_release(self.args, self.now)
+        out = Path(self.args.out)
+        binary = (out / "new-api").read_bytes()
+        (out / "new-api").write_bytes(b"changed after build")
+        image_ref = release.GHCR_REPOSITORY + "@sha256:" + "a" * 64
+        with self.assertRaises(release.BuildError):
+            release.finalize_release(out, image_ref)
+        self.assertFalse((out / "release.json").exists())
+        (out / "new-api").write_bytes(binary)
+        (out / "build.json").write_text(json.dumps(dict(built, image_repository="ghcr.io/other/new-api")))
+        with self.assertRaises(release.BuildError):
+            release.finalize_release(out, image_ref)
+        self.assertFalse((out / "release.json").exists())
+
+    def test_finalize_cli_records_digest_without_rebuilding(self):
+        release.build_release(self.args, self.now)
+        before = self.observations.read_bytes()
+        image_ref = release.GHCR_REPOSITORY + "@sha256:" + "a" * 64
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            result = release.main(["--finalize", self.args.out, "--image-ref", image_ref])
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["image_ref"], image_ref)
+        self.assertEqual(self.observations.read_bytes(), before)
 
     def test_dependency_cache_identity_changes_only_with_toolchain_or_dependency_manifests(self):
         toolchain = release.toolchain_from_snapshot(self.repo)
