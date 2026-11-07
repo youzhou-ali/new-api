@@ -32,16 +32,27 @@ and business-table fingerprints must remain unchanged. This mode cannot combine
 the original column migration with the new index migration. If the index already
 exists, the full schema must remain unchanged.
 
-Both additive modes require the new image to start twice on the isolated
+The `--database-mode token-quota-grants-v1` mode permits only adding the empty
+`public.token_quota_grants` table: `grant_id varchar(64)` primary key,
+`token_id bigint`, `user_id bigint`, `quota bigint`, `source varchar(16)`, and
+`created_at bigint`, all non-null with no defaults, plus the non-unique btree
+`idx_token_quota_grants_token_created_at (token_id, created_at)` index. Other
+tables, column shapes, constraints, indexes and existing data must stay
+unchanged. If the grants table already exists, every grant and the full schema
+must remain unchanged. This mode cannot combine the earlier log migrations.
+Select `token-quota-grants-v1` in the build workflow's `database_mode` input for
+the reviewed Token quota grant release.
+
+All additive modes require the new image to start twice on the isolated
 production-backup clone and the old image to start successfully on that upgraded
 clone. Preparation/cutover record the exact schema comparison and full business
 data checks; collection requires their snapshots and old-image compatibility
-evidence. Neither mode changes the default `unchanged` checks or the other's
+evidence. None changes the default `unchanged` checks or another mode's
 allowlist. Select `usage-tag-time-index-v1` in the build workflow's
 `database_mode` input for that reviewed index-only release.
 
-Rollback preserves these additive columns/indexes and switches only the app
-image/config. Never drop the new columns/index or restore an earlier database to
+Rollback preserves these additive tables/columns/indexes and switches only the app
+image/config. Never drop the new table/columns/index or restore an earlier database to
 roll back this release: that would discard later data. Keep the initial/final
 database archives, snapshot comparisons, old-image compatibility evidence and
 original configuration in the collected recovery bundle. Any failed rehearsal

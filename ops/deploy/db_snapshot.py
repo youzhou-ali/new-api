@@ -32,14 +32,25 @@ def query(container, sql):
         'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "$1"', "sh", sql])
 
 
-def normalize_dump(schema, compact=False, omit_line=None):
+def normalize_dump(schema, compact=False, omit_line=None, omit_statements=()):
     """Ignore dump framing only outside SQL literals and quoted bodies."""
     kept = []
     quote = None
     escape_string = False
     comment_depth = 0
-    for line in schema.split("\n"):
+    lines = schema.split("\n")
+    statements = [statement.split("\n") for statement in omit_statements]
+    skip_until = 0
+    for line_number, line in enumerate(lines):
+        if line_number < skip_until:
+            continue
         if quote is None and comment_depth == 0:
+            statement = next((statement for statement in statements
+                              if lines[line_number:line_number + len(statement)] == statement), None)
+            if statement is not None:
+                skip_until = line_number + len(statement)
+                statements.remove(statement)
+                continue
             if line == omit_line:
                 continue
             if line.startswith(("--", "\\restrict ", "\\unrestrict ")) or (compact and not line.strip()):
@@ -153,6 +164,33 @@ def usage_tag_time_index_schema(schema):
             "base_schema_sha256": hashlib.sha256(normalized.encode()).hexdigest()}
 
 
+def token_quota_grants_schema(schema):
+    """Permit only the reviewed grants table, primary key and lookup index."""
+    statements = (
+        "CREATE TABLE public.token_quota_grants (\n"
+        "    grant_id character varying(64) NOT NULL,\n"
+        "    token_id bigint NOT NULL,\n"
+        "    user_id bigint NOT NULL,\n"
+        "    quota bigint NOT NULL,\n"
+        "    source character varying(16) NOT NULL,\n"
+        "    created_at bigint NOT NULL\n);",
+        "ALTER TABLE ONLY public.token_quota_grants\n"
+        "    ADD CONSTRAINT token_quota_grants_pkey PRIMARY KEY (grant_id);",
+        "CREATE INDEX idx_token_quota_grants_token_created_at ON public.token_quota_grants "
+        "USING btree (token_id, created_at);",
+    )
+    normalized = normalize_dump(schema, compact=True)
+    present = [normalize_dump(schema, compact=True, omit_statements=(statement,)) != normalized
+               for statement in statements]
+    if any(present) and not all(present):
+        return {"valid": False}
+    # Each exact statement is omitted once, only outside SQL literals. Extra
+    # DDL, including duplicate statements and new constraints, stays in the hash.
+    base = normalize_dump(schema, compact=True, omit_statements=statements)
+    return {"valid": True, "present": all(present),
+            "base_schema_sha256": hashlib.sha256(base.encode()).hexdigest()}
+
+
 def capture_snapshot(container):
     tables = query(container, "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;").splitlines()
     rows = {}
@@ -167,6 +205,7 @@ def capture_snapshot(container):
         'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --schema-only --no-owner --no-privileges'])
     schema = normalize_dump(schema)
     result = {"tables": rows, "schema_sha256": hashlib.sha256(schema.encode()).hexdigest()}
+    result["token_quota_grants_v1"] = token_quota_grants_schema(schema)
     if "logs" in tables:
         usage = usage_tags_schema(schema)
         count, digest, nonempty = query(container,

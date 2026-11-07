@@ -75,7 +75,7 @@ def write_json(path, value, exclusive=False):
 def validate_manifest(manifest):
     require(isinstance(manifest, dict), "Invalid release manifest")
     require(type(manifest.get("format")) is int and manifest["format"] == 2, "Unsupported release format")
-    require(manifest.get("database_mode") in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"}, "Unsupported database mode")
+    require(manifest.get("database_mode") in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"}, "Unsupported database mode")
     require(manifest.get("platform") == "linux/amd64", "Only linux/amd64 releases are supported")
     require(isinstance(manifest.get("release_id"), str) and NAME.fullmatch(manifest["release_id"]), "Invalid release ID")
     for field in ("commit", "tree"):
@@ -306,7 +306,7 @@ def rehearse(runner, resources, target, manifest, original, release_dir, backup,
     pg, cache, application = prefix + "-pg", prefix + "-redis", prefix + "-app"
     rollback_application = prefix + "-rollback-app"
     rollback_version = None
-    if manifest["database_mode"] in {"usage-tags-v1", "usage-tag-time-index-v1"}:
+    if manifest["database_mode"] in {"usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"}:
         status = json.loads(runner.run(["docker", "exec", target["app_container"], "wget", "-qO-",
                                        "http://127.0.0.1:" + str(target["app_port"]) + "/api/status"]))
         rollback_version = status.get("data", {}).get("version")
@@ -490,7 +490,7 @@ def prepare(release_dir, target, manifest):
                 result = {"old_image_id": old["Image"], "new_image_id": image["Id"], "rollback_image": rollback,
                           "old_image": old["Config"]["Image"], "config_sha256": config_hash, "nginx_sha256": nginx_hash,
                           "rehearsal_passed": True, "release_manifest_sha256": manifest_hash, "target_sha256": target_hash,
-                          "rollback_rehearsal_passed": manifest["database_mode"] in {"usage-tags-v1", "usage-tag-time-index-v1"},
+                          "rollback_rehearsal_passed": manifest["database_mode"] in {"usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"},
                           "env_file_present": env_backup.exists(), "env_sha256": file_hash(env_backup) if env_backup.exists() else None}
             except BaseException as error:
                 failure = error

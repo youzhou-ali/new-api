@@ -266,6 +266,9 @@ class DeploymentTests(unittest.TestCase):
     def test_usage_time_index_recovery_requires_and_collects_compatibility_evidence(self):
         self.assert_additive_recovery_evidence("usage-tag-time-index-v1")
 
+    def test_quota_grants_recovery_requires_and_collects_compatibility_evidence(self):
+        self.assert_additive_recovery_evidence("token-quota-grants-v1")
+
     def test_stage_uploads_only_immutable_metadata_and_fetches_digest_without_binary_transfer(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

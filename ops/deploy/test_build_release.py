@@ -239,6 +239,11 @@ class ReleaseBuildTests(unittest.TestCase):
         manifest = release.build_release(self.args, self.now)
         self.assertEqual(manifest["database_mode"], "usage-tag-time-index-v1")
 
+    def test_explicit_quota_grants_database_mode_is_recorded(self):
+        self.args.database_mode = "token-quota-grants-v1"
+        manifest = release.build_release(self.args, self.now)
+        self.assertEqual(manifest["database_mode"], "token-quota-grants-v1")
+
     def test_same_committed_dependencies_reuse_download_cache_without_sharing_node_modules(self):
         first_source = Path(self.args.out) / "source/web/node_modules"
         existing_caches = {name: str(self.root / name) for name in ("BUN_INSTALL_CACHE_DIR", "GOMODCACHE", "GOCACHE")}

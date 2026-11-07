@@ -302,7 +302,7 @@ names=['production-final.dump','production-final.dump.sha256','postgres-globals.
        'application-final.tgz.sha256']
 if state['phase']=='success' or (b/'production-after.json').exists(): names.append('production-after.json')
 if prepared['env_file_present']: names.append('.env.original')
-if m['database_mode'] in ('usage-tags-v1','usage-tag-time-index-v1'):
+if m['database_mode'] in ('usage-tags-v1','usage-tag-time-index-v1','token-quota-grants-v1'):
     assert prepared.get('rollback_rehearsal_passed') is True, 'rollback rehearsal evidence missing'
     names.extend(['production-initial.dump','rehearsal-before.json','rehearsal-after-1.json',
                   'rehearsal-after-2.json','rehearsal-rollback.json','rehearsal-comparison.json'])

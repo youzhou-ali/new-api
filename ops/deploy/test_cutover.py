@@ -316,7 +316,7 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(cutover.compare_snapshots(before, changed, "usage-tags-v1")["unexpected_tables"], ["users"])
 
     def test_usage_tags_cutover_requires_successful_rollback_rehearsal(self):
-        for mode in ("usage-tags-v1", "usage-tag-time-index-v1"):
+        for mode in ("usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"):
             with self.subTest(mode=mode):
                 self.manifest["database_mode"] = mode
                 raw = json.dumps(self.manifest).encode()
@@ -390,6 +390,83 @@ class CutoverTests(unittest.TestCase):
                 comparison = cutover.compare_snapshots(baseline, changed, "usage-tag-time-index-v1")
                 self.assertEqual(comparison["unexpected_tables"], [table])
         repeated = cutover.compare_snapshots(after, after, "usage-tag-time-index-v1")
+        self.assertFalse(repeated["schema_changed"] or repeated["additive_schema_verified"])
+
+    def test_quota_grants_schema_accepts_only_reviewed_table_and_indexes(self):
+        original = "CREATE TABLE public.tokens (\n    id bigint NOT NULL\n);\n"
+        table = ("CREATE TABLE public.token_quota_grants (\n"
+                 "    grant_id character varying(64) NOT NULL,\n"
+                 "    token_id bigint NOT NULL,\n    user_id bigint NOT NULL,\n"
+                 "    quota bigint NOT NULL,\n    source character varying(16) NOT NULL,\n"
+                 "    created_at bigint NOT NULL\n);\n")
+        primary = ("ALTER TABLE ONLY public.token_quota_grants\n"
+                   "    ADD CONSTRAINT token_quota_grants_pkey PRIMARY KEY (grant_id);\n")
+        index = ("CREATE INDEX idx_token_quota_grants_token_created_at ON public.token_quota_grants "
+                 "USING btree (token_id, created_at);\n")
+        upgraded = original + table + primary + index
+        before = db_snapshot.token_quota_grants_schema(original)
+        after = db_snapshot.token_quota_grants_schema(upgraded)
+        self.assertTrue(before["valid"] and after["valid"])
+        self.assertFalse(before["present"])
+        self.assertTrue(after["present"])
+        self.assertEqual(before["base_schema_sha256"], after["base_schema_sha256"])
+        for changed in (upgraded.replace("varying(64)", "varying(65)"),
+                        upgraded.replace("source character varying(16) NOT NULL", "source text"),
+                        upgraded.replace("quota bigint NOT NULL", "quota bigint DEFAULT 0 NOT NULL"),
+                        upgraded.replace(primary, ""), upgraded.replace(index, ""),
+                        upgraded.replace("(token_id, created_at)", "(created_at, token_id)"),
+                        upgraded.replace("CREATE INDEX", "CREATE UNIQUE INDEX"),
+                        upgraded + index, upgraded + table,
+                        upgraded.replace("USING btree", "USING hash"),
+                        upgraded.replace("(token_id, created_at);", "(token_id, created_at) WHERE quota > 0;"),
+                        upgraded + "CREATE INDEX extra ON public.tokens USING btree (id);\n"):
+            with self.subTest(schema=changed):
+                result = db_snapshot.token_quota_grants_schema(changed)
+                self.assertTrue(not result["valid"] or not result.get("present")
+                                or result["base_schema_sha256"] != before["base_schema_sha256"])
+        literal = original + "CREATE FUNCTION public.example() RETURNS text LANGUAGE sql AS $body$\n"
+        embedded = literal + table + primary + index + "$body$;\n"
+        result = db_snapshot.token_quota_grants_schema(embedded)
+        self.assertFalse(result.get("present"))
+        self.assertEqual(result["base_schema_sha256"], hashlib.sha256(
+            db_snapshot.normalize_dump(embedded, compact=True).encode()).hexdigest())
+
+    def test_quota_grants_comparison_requires_empty_addition_and_preserves_existing_data(self):
+        before = {"schema_sha256": "a" * 64,
+                  "tables": {name: {"count": 1, "sha": "a" * 32} for name in ("users", "tokens", "channels", "logs")},
+                  "token_quota_grants_v1": {"valid": True, "present": False, "base_schema_sha256": "a" * 64}}
+        after = copy.deepcopy(before)
+        after["schema_sha256"] = "b" * 64
+        after["tables"]["token_quota_grants"] = {"count": 0, "sha": hashlib.md5(b"").hexdigest()}
+        after["token_quota_grants_v1"]["present"] = True
+        for mode in ("unchanged", "usage-tags-v1", "usage-tag-time-index-v1"):
+            with self.subTest(mode=mode), self.assertRaises(cutover.CutoverError):
+                cutover.compare_snapshots(before, after, mode)
+        accepted = cutover.compare_snapshots(before, after, "token-quota-grants-v1")
+        self.assertTrue(accepted["additive_schema_verified"])
+        self.assertFalse(accepted["schema_changed"] or accepted["unexpected_tables"])
+        for key, value in (("valid", False), ("present", False), ("base_schema_sha256", "c" * 64)):
+            changed = copy.deepcopy(after)
+            changed["token_quota_grants_v1"][key] = value
+            with self.subTest(key=key), self.assertRaises(cutover.CutoverError):
+                cutover.compare_snapshots(before, changed, "token-quota-grants-v1")
+        for change in ("nonempty", "extra", "missing"):
+            changed = copy.deepcopy(after)
+            if change == "nonempty":
+                changed["tables"]["token_quota_grants"]["count"] = 1
+            elif change == "extra":
+                changed["tables"]["other"] = changed["tables"]["tokens"].copy()
+            else:
+                del changed["tables"]["tokens"]
+            with self.subTest(change=change), self.assertRaises(cutover.CutoverError):
+                cutover.compare_snapshots(before, changed, "token-quota-grants-v1")
+        for baseline in (before, after):
+            for name in baseline["tables"]:
+                changed = copy.deepcopy(after)
+                changed["tables"][name]["sha"] = "c" * 32
+                result = cutover.compare_snapshots(baseline, changed, "token-quota-grants-v1")
+                self.assertEqual(result["unexpected_tables"], [name])
+        repeated = cutover.compare_snapshots(after, after, "token-quota-grants-v1")
         self.assertFalse(repeated["schema_changed"] or repeated["additive_schema_verified"])
 
     def test_rollback_recloses_partially_open_firewall_before_stopping_application(self):

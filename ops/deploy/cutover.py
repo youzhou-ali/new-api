@@ -64,7 +64,7 @@ def validate_documents(target, manifest, prepared, manifest_bytes, target_bytes)
         if public_url.scheme not in ("http", "https") or not public_url.hostname or public_url.username or public_url.password:
             raise ValueError()
         if (type(manifest["format"]) is not int or manifest["format"] != 2
-                or manifest["database_mode"] not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"} or manifest["platform"] != "linux/amd64"):
+                or manifest["database_mode"] not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"} or manifest["platform"] != "linux/amd64"):
             raise ValueError()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", manifest["release_id"]):
             raise ValueError()
@@ -88,7 +88,7 @@ def validate_documents(target, manifest, prepared, manifest_bytes, target_bytes)
                 raise ValueError()
         if prepared["old_image_id"] == prepared["new_image_id"] or prepared["rehearsal_passed"] is not True:
             raise ValueError()
-        if manifest["database_mode"] in {"usage-tags-v1", "usage-tag-time-index-v1"} and prepared.get("rollback_rehearsal_passed") is not True:
+        if manifest["database_mode"] in {"usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"} and prepared.get("rollback_rehearsal_passed") is not True:
             raise ValueError()
         if prepared["release_manifest_sha256"] != hashlib.sha256(manifest_bytes).hexdigest():
             raise ValueError()
@@ -326,12 +326,14 @@ def load_snapshot(path):
             if (type(usage["base_logs"]["count"]) is not int or usage["base_logs"]["count"] < 0
                     or not re.fullmatch(r"[0-9a-f]{32}", usage["base_logs"]["sha"])):
                 raise ValueError()
-        index = value.get("usage_tag_time_index_v1")
-        if index is not None:
-            if type(index["valid"]) is not bool:
+        for key in ("usage_tag_time_index_v1", "token_quota_grants_v1"):
+            addition = value.get(key)
+            if addition is None:
+                continue
+            if type(addition["valid"]) is not bool:
                 raise ValueError()
-            if index["valid"] and (type(index["present"]) is not bool
-                    or not re.fullmatch(r"[0-9a-f]{64}", index["base_schema_sha256"])):
+            if addition["valid"] and (type(addition["present"]) is not bool
+                    or not re.fullmatch(r"[0-9a-f]{64}", addition["base_schema_sha256"])):
                 raise ValueError()
         return value
     except (OSError, ValueError, TypeError, KeyError):
@@ -339,12 +341,16 @@ def load_snapshot(path):
 
 
 def compare_snapshots(before, after, database_mode="unchanged"):
-    if database_mode not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"}:
+    if database_mode not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"}:
         raise CutoverError("unsupported database comparison mode")
-    if before["tables"].keys() != after["tables"].keys():
+    before_tables, after_tables = before["tables"].keys(), after["tables"].keys()
+    grants_added = (database_mode == "token-quota-grants-v1"
+                    and "token_quota_grants" not in before_tables
+                    and after_tables == before_tables | {"token_quota_grants"})
+    if before_tables != after_tables and not grants_added:
         raise CutoverError("database table set changed")
-    changed = sorted(name for name in before["tables"]
-                     if before["tables"][name] != after["tables"][name])
+    changed = sorted(name for name in before_tables | after_tables
+                     if before["tables"].get(name) != after["tables"].get(name))
     permitted = set(ALLOWED_TABLE_CHANGES)
     casbin_equal = (
         bool(before.get("casbin_policy_sha256"))
@@ -382,6 +388,22 @@ def compare_snapshots(before, after, database_mode="unchanged"):
             schema_changed = False
         # An index cannot change any log field, including existing usage tags.
         # Full-row hashes remain authoritative in both first and repeated runs.
+    elif database_mode == "token-quota-grants-v1":
+        old, new = before.get("token_quota_grants_v1", {}), after.get("token_quota_grants_v1", {})
+        if (old.get("valid") is not True or new.get("valid") is not True
+                or new.get("present") is not True
+                or old.get("present") is not ("token_quota_grants" in before_tables)
+                or "token_quota_grants" not in after_tables
+                or old.get("base_schema_sha256") != new.get("base_schema_sha256")):
+            raise CutoverError("database schema differs from token-quota-grants-v1 addition")
+        if grants_added:
+            if after["tables"]["token_quota_grants"] != {"count": 0, "sha": hashlib.md5(b"").hexdigest()}:
+                raise CutoverError("token-quota-grants-v1 added a nonempty grants table")
+            permitted.add("token_quota_grants")
+            additive_verified = True
+            schema_changed = False
+        # Existing grants are business records; repeated startup and rollback
+        # must preserve their complete row fingerprints and the full schema.
     return {"changed_tables": changed, "unexpected_tables": sorted(set(changed) - permitted),
             "schema_changed": schema_changed, "additive_schema_verified": additive_verified,
             "casbin_policy_equal": casbin_equal}
