@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid token quota grant": "Invalid token quota grant",
+    "Token quota grant conflicts with an existing grant": "Token quota grant conflicts with an existing grant",
+    "Token quota limit exceeded": "Token quota limit exceeded",
+    "API token quota grant": "API token quota grant",
     "Baidu Search": "Baidu Search",
     "Search the web with Baidu Search": "Search the web with Baidu Search",
     "Search channels require the search endpoint without streaming": "Search channels require the search endpoint without streaming",

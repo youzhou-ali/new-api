@@ -4,8 +4,10 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestTokenAutoGroupsRoundTripThroughRedisHashCache(t *testing.T) {
@@ -78,4 +80,39 @@ func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 func cacheSetTokenForTest(token Token) error {
 	_, err := cacheInitToken(token)
 	return err
+}
+
+func TestTokenQuotaGrantImmediatelyRestoresCachedExhaustedToken(t *testing.T) {
+	oldDB := DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	DB = db
+	t.Cleanup(func() { DB = oldDB; sqlDB, err := db.DB(); require.NoError(t, err); require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, db.AutoMigrate(&Token{}, &TokenQuotaGrant{}))
+	server := useUserCacheMiniRedis(t)
+	token := Token{UserId: 7, Key: "exhausted-grant-cache", Status: common.TokenStatusExhausted, ExpiredTime: -1, UsedQuota: 80}
+	require.NoError(t, token.Insert())
+	require.NoError(t, cacheSetTokenForTest(token))
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenQuotaExhausted)
+	grant := TokenQuotaGrant{GrantID: "restore-cache", TokenID: token.Id, UserID: token.UserId, Quota: 25, Source: "beta"}
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { _, err := GrantTokenQuota(tx, grant); return err }))
+	restored, err := ValidateUserToken(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, 25, restored.RemainQuota)
+	assert.Equal(t, 80, restored.UsedQuota)
+	assert.Equal(t, common.TokenStatusEnabled, restored.Status)
+	// A pre-mutation reader cannot publish its exhausted snapshot after commit.
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	assert.Zero(t, initialized)
+	grant.GrantID = "redis-unavailable"
+	server.SetError("redis unavailable")
+	require.Error(t, db.Transaction(func(tx *gorm.DB) error { _, err := GrantTokenQuota(tx, grant); return err }))
+	server.SetError("")
+	var count int64
+	require.NoError(t, db.Model(&TokenQuotaGrant{}).Where("grant_id = ?", grant.GrantID).Count(&count).Error)
+	assert.Zero(t, count)
+	require.NoError(t, db.First(&restored, token.Id).Error)
+	assert.Equal(t, 25, restored.RemainQuota)
 }

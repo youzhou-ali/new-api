@@ -211,6 +211,8 @@ func TokenOperationAudit() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var action, content string
 		switch c.Request.Method + " " + c.FullPath() {
+		case "POST /api/token/:id/quota_grants":
+			action, content = "token.quota_grant", "API token quota grant"
 		case "POST /api/token/":
 			action, content = "token.create", "API token creation"
 		case "PUT /api/token/":

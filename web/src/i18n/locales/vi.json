@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid token quota grant": "Cấp hạn mức mã thông báo không hợp lệ",
+    "Token quota grant conflicts with an existing grant": "Lần cấp hạn mức mã thông báo xung đột với bản ghi hiện có",
+    "Token quota limit exceeded": "Đã vượt giới hạn hạn mức mã thông báo",
+    "API token quota grant": "Cấp hạn mức mã thông báo API",
     "Baidu Search": "Baidu Search",
     "Search the web with Baidu Search": "Tìm kiếm trên web bằng Baidu Search",
     "Search channels require the search endpoint without streaming": "Kênh tìm kiếm yêu cầu điểm cuối tìm kiếm không có chế độ truyền phát",

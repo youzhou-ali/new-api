@@ -211,16 +211,18 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/authz/catalog": accessTokenScopeRule("user:read"),
 
 	// router/api-router.go: /api/token
-	"GET /api/token/":            accessTokenScopeRule("api_key:read"),
-	"GET /api/token/search":      accessTokenScopeRule("api_key:read"),
-	"GET /api/token/auto-groups": accessTokenScopeRule("api_key:read"),
-	"GET /api/token/:id":         accessTokenScopeRule("api_key:read"),
-	"POST /api/token/:id/key":    accessTokenScopeRule("api_key:reveal"),
-	"POST /api/token/":           accessTokenScopeRule("api_key:write"),
-	"PUT /api/token/":            accessTokenScopeRule("api_key:write"),
-	"DELETE /api/token/:id":      accessTokenScopeRule("api_key:write"),
-	"POST /api/token/batch":      accessTokenScopeRule("api_key:write"),
-	"POST /api/token/batch/keys": accessTokenScopeRule("api_key:reveal"),
+	"GET /api/token/":                  accessTokenScopeRule("api_key:read"),
+	"GET /api/token/search":            accessTokenScopeRule("api_key:read"),
+	"GET /api/token/auto-groups":       accessTokenScopeRule("api_key:read"),
+	"GET /api/token/:id/quota_grants":  accessTokenScopeRule("api_key:read"),
+	"POST /api/token/:id/quota_grants": accessTokenScopeRule("api_key:write"),
+	"GET /api/token/:id":               accessTokenScopeRule("api_key:read"),
+	"POST /api/token/:id/key":          accessTokenScopeRule("api_key:reveal"),
+	"POST /api/token/":                 accessTokenScopeRule("api_key:write"),
+	"PUT /api/token/":                  accessTokenScopeRule("api_key:write"),
+	"DELETE /api/token/:id":            accessTokenScopeRule("api_key:write"),
+	"POST /api/token/batch":            accessTokenScopeRule("api_key:write"),
+	"POST /api/token/batch/keys":       accessTokenScopeRule("api_key:reveal"),
 
 	// router/api-router.go: /api/redemption
 	"GET /api/redemption/":           accessTokenScopeRule("redemption:read"),
