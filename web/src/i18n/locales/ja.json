@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid token quota grant": "無効なトークン割当量の付与",
+    "Token quota grant conflicts with an existing grant": "トークン割当量の付与が既存の記録と競合しています",
+    "Token quota limit exceeded": "トークン割当量の上限を超えています",
+    "API token quota grant": "API トークン割当量の付与",
     "Baidu Search": "Baidu Search",
     "Search the web with Baidu Search": "Baidu Search でウェブを検索",
     "Search channels require the search endpoint without streaming": "検索チャネルではストリーミングなしの検索エンドポイントを使用してください",

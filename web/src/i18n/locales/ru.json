@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid token quota grant": "Недопустимое начисление квоты токена",
+    "Token quota grant conflicts with an existing grant": "Начисление квоты токена конфликтует с существующим начислением",
+    "Token quota limit exceeded": "Превышен лимит квоты токена",
+    "API token quota grant": "Начисление квоты токена API",
     "Baidu Search": "Baidu Search",
     "Search the web with Baidu Search": "Поиск в интернете с Baidu Search",
     "Search channels require the search endpoint without streaming": "Поисковые каналы требуют поисковую конечную точку без потокового режима",

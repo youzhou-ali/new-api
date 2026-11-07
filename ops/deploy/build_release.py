@@ -199,7 +199,7 @@ def validate_static_amd64(binary):
 
 def build_release(args, now=None):
     database_mode = getattr(args, "database_mode", "unchanged")
-    if database_mode not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1"}:
+    if database_mode not in {"unchanged", "usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"}:
         raise BuildError("unsupported database mode")
     runtime_base = validate_runtime_base(args.runtime_base)
     repo = Path(args.repo).expanduser().resolve(strict=True)
@@ -324,7 +324,7 @@ def main(argv=None):
     parser.add_argument("--ref")
     parser.add_argument("--out")
     parser.add_argument("--runtime-base")
-    parser.add_argument("--database-mode", choices=("unchanged", "usage-tags-v1", "usage-tag-time-index-v1"), default="unchanged")
+    parser.add_argument("--database-mode", choices=("unchanged", "usage-tags-v1", "usage-tag-time-index-v1", "token-quota-grants-v1"), default="unchanged")
     parser.add_argument("--go", default="go")
     parser.add_argument("--bun", default="bun")
     parser.add_argument("--finalize", metavar="DIRECTORY", help="Bind a published digest to build.json")

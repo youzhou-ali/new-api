@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid token quota grant": "Attribution de quota de jeton non valide",
+    "Token quota grant conflicts with an existing grant": "Cette attribution de quota de jeton est en conflit avec une attribution existante",
+    "Token quota limit exceeded": "Limite du quota de jeton dépassée",
+    "API token quota grant": "Attribution de quota de jeton API",
     "Baidu Search": "Baidu Search",
     "Search the web with Baidu Search": "Rechercher sur le Web avec Baidu Search",
     "Search channels require the search endpoint without streaming": "Les canaux de recherche nécessitent le point de terminaison de recherche sans streaming",

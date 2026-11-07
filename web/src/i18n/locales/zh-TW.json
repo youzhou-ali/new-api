@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid token quota grant": "無效的權杖額度發放",
+    "Token quota grant conflicts with an existing grant": "權杖額度發放與現有紀錄衝突",
+    "Token quota limit exceeded": "權杖額度超過上限",
+    "API token quota grant": "API 權杖額度發放",
     "Baidu Search": "百度搜尋",
     "Search the web with Baidu Search": "透過百度搜尋網頁",
     "Search channels require the search endpoint without streaming": "搜尋渠道必須使用搜尋端點，且不支援串流模式",

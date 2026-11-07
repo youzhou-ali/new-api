@@ -17,6 +17,7 @@ on:
           - unchanged
           - usage-tags-v1
           - usage-tag-time-index-v1
+          - token-quota-grants-v1
 
 permissions:
   contents: read

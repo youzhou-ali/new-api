@@ -367,6 +367,26 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 		})
 	}
 
+	readKeys, _ := createMiddlewareScopedToken(t, admin.Id, 0, "api_key:read")
+	writeKeys, _ := createMiddlewareScopedToken(t, admin.Id, 0, "api_key:write")
+	router.GET("/api/token/:id/quota_grants", UserAuth(), ok)
+	router.POST("/api/token/:id/quota_grants", UserAuth(), ok)
+	for _, tc := range []struct {
+		method, token string
+		status        int
+	}{
+		{http.MethodGet, readKeys, http.StatusOK},
+		{http.MethodGet, profile, http.StatusForbidden},
+		{http.MethodPost, writeKeys, http.StatusOK},
+		{http.MethodPost, readKeys, http.StatusForbidden},
+	} {
+		request := httptest.NewRequest(tc.method, "/api/token/1/quota_grants", nil)
+		request.Header.Set("Authorization", "Bearer "+tc.token)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assert.Equal(t, tc.status, response.Code, response.Body.String())
+	}
+
 	// The token grant never widens the account: revoking the Casbin permission
 	// rejects a token that still carries the scope.
 	require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceChannel: {authz.ActionRead: false}}))

@@ -67,6 +67,13 @@ class FakeDocker:
                                                     "base_schema_sha256": "a" * 64}
                 if upgraded:
                     value["schema_sha256"] = "e" * 64
+            if self.manifest["database_mode"] == "token-quota-grants-v1":
+                upgraded = "before" not in args[-1]
+                value["token_quota_grants_v1"] = {"valid": True, "present": upgraded,
+                                                 "base_schema_sha256": "a" * 64}
+                if upgraded:
+                    value["schema_sha256"] = "e" * 64
+                    value["tables"]["token_quota_grants"] = {"count": 0, "sha": hashlib.md5(b"").hexdigest()}
             if self.schema_change and "after" in args[-1]:
                 value["schema_sha256"] = "d" * 64
             Path(args[-1]).write_text(json.dumps(value))
@@ -308,6 +315,9 @@ class PrepareTests(unittest.TestCase):
 
     def test_index_rehearsal_verifies_old_image_on_upgraded_clone(self):
         self.assert_additive_rehearsal("usage-tag-time-index-v1")
+
+    def test_quota_grants_rehearsal_verifies_old_image_on_upgraded_clone(self):
+        self.assert_additive_rehearsal("token-quota-grants-v1")
 
     def test_failed_old_image_compatibility_cannot_authorize_cutover(self):
         self.manifest["database_mode"] = "usage-tags-v1"

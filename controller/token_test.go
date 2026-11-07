@@ -736,7 +736,8 @@ func TestAPITokenAuditDatabaseMatrix(t *testing.T) {
 				db, _ := newAuditTestDatabase(t, database.name, dsn)
 				model.DB = db
 				common.SetDatabaseTypes(database.typ, database.typ)
-				require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}))
+				require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.TokenQuotaGrant{}, &model.Option{}))
+				require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 				// Initialize production column quoting as well as the existing audit table.
 				require.NoError(t, model.InitLogDB())
 				if separateLog {
@@ -777,6 +778,7 @@ func verifyAPITokenAudit(t *testing.T) {
 	router.Use(middleware.RequestId(), middleware.AccessTokenAudit())
 	tokenRoutes := router.Group("/api/token", middleware.UserAuth(), middleware.TokenOperationAudit())
 	tokenRoutes.POST("/", AddToken)
+	tokenRoutes.POST("/:id/quota_grants", GrantTokenQuota)
 	tokenRoutes.PUT("/", UpdateToken)
 	tokenRoutes.DELETE("/:id", DeleteToken)
 	tokenRoutes.POST("/batch", DeleteTokenBatch)
@@ -800,6 +802,8 @@ func verifyAPITokenAudit(t *testing.T) {
 		initialStatus                    int
 		failWrite, rateLimit, usePAT     bool
 	}{
+		{name: "quota grant", method: "POST", path: "/$id/quota_grants", body: `{"grant_id":"audit-grant", "quota":25,"source":"beta"}`, action: "token.quota_grant", success: true, params: `{"id":$id,"grant_id":"audit-grant","quota":25,"source":"beta"}`, usePAT: true},
+		{name: "foreign quota grant", method: "POST", path: "/$other/quota_grants", body: `{"grant_id":"foreign-grant", "quota":25,"source":"beta"}`, action: "token.quota_grant", params: `{"id":$other}`},
 		{name: "create", method: "POST", path: "/", body: `{"name":"created","expired_time":-1,"unlimited_quota":true}`, action: "token.create", success: true},
 		{name: "invalid create", method: "POST", path: "/", body: `{"name":"attempt","remain_quota":-1}`, action: "token.create", params: `{"name":"attempt"}`},
 		{name: "malformed body", method: "POST", path: "/", body: `{"key":"raw-body-secret"`, action: "token.create", params: `{}`},
@@ -1014,4 +1018,193 @@ func verifyAPITokenAudit(t *testing.T) {
 		require.NoError(t, model.DB.Model(&model.Token{}).Where("name = ?", "audit-down").Count(&count).Error)
 		assert.EqualValues(t, 1, count)
 	})
+}
+
+func TestTokenQuotaGrantsDatabaseMatrix(t *testing.T) {
+	for _, database := range []struct {
+		name, env string
+		typ       common.DatabaseType
+	}{
+		{"sqlite", "", common.DatabaseTypeSQLite},
+		{"postgres", "GRANTS_POSTGRES_DSN", common.DatabaseTypePostgreSQL},
+		{"mysql", "GRANTS_MYSQL_DSN", common.DatabaseTypeMySQL},
+	} {
+		for _, upgrade := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/upgrade=%v", database.name, upgrade), func(t *testing.T) {
+				dsn := os.Getenv(database.env)
+				if database.env != "" && dsn == "" {
+					t.Skip(database.env + " is not configured")
+				}
+				previousDB, previousLog := model.DB, model.LOG_DB
+				previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+				previousRedis := common.RedisEnabled
+				t.Cleanup(func() {
+					model.DB, model.LOG_DB = previousDB, previousLog
+					common.SetDatabaseTypes(previousMainType, previousLogType)
+					common.RedisEnabled = previousRedis
+				})
+				db, _ := newAuditTestDatabase(t, database.name, dsn)
+				model.DB, model.LOG_DB = db, db
+				common.SetDatabaseTypes(database.typ, database.typ)
+				common.RedisEnabled = false
+				var preserved model.Token
+				if upgrade {
+					require.NoError(t, db.AutoMigrate(&model.Token{}))
+					preserved = model.Token{UserId: 99, Key: "pre-existing-key", RemainQuota: 321, UsedQuota: 654}
+					require.NoError(t, db.Create(&preserved).Error)
+				}
+				for range 2 {
+					require.NoError(t, db.AutoMigrate(&model.Token{}, &model.User{}, &model.TokenQuotaGrant{}))
+				}
+				if upgrade {
+					var reloaded model.Token
+					require.NoError(t, db.First(&reloaded, preserved.Id).Error)
+					assert.Equal(t, preserved, reloaded)
+				}
+				assert.True(t, db.Migrator().HasIndex(&model.TokenQuotaGrant{}, "idx_token_quota_grants_token_created_at"))
+				versionSQL := "SELECT version()"
+				if database.name == "sqlite" {
+					versionSQL = "SELECT sqlite_version()"
+				}
+				var version string
+				require.NoError(t, db.Raw(versionSQL).Scan(&version).Error)
+				t.Logf("database version: %s", version)
+				user := model.User{Username: "grant-owner", Quota: 1234, UsedQuota: 5678, AffCode: "grant-owner"}
+				require.NoError(t, db.Create(&user).Error)
+				for _, status := range []int{common.TokenStatusEnabled, common.TokenStatusDisabled, common.TokenStatusExpired, common.TokenStatusExhausted} {
+					t.Run(fmt.Sprintf("status=%d", status), func(t *testing.T) {
+						token := model.Token{UserId: user.Id, Key: fmt.Sprintf("grant-key-%d", status), Status: status, RemainQuota: 5, UsedQuota: 70, ExpiredTime: -1}
+						require.NoError(t, db.Create(&token).Error)
+						grant := model.TokenQuotaGrant{GrantID: fmt.Sprintf("grant-%d", status), TokenID: token.Id, UserID: user.Id, Quota: 25, Source: "beta"}
+						var credited *model.Token
+						for range 2 {
+							require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+								var err error
+								credited, err = model.GrantTokenQuota(tx, grant)
+								return err
+							}))
+							assert.Equal(t, 30, credited.RemainQuota)
+							assert.Equal(t, 70, credited.UsedQuota)
+							wantStatus := status
+							if status == common.TokenStatusExhausted {
+								wantStatus = common.TokenStatusEnabled
+							}
+							assert.Equal(t, wantStatus, credited.Status)
+						}
+						grant.Quota++
+						require.Error(t, db.Transaction(func(tx *gorm.DB) error {
+							_, err := model.GrantTokenQuota(tx, grant)
+							return err
+						}))
+						var count int64
+						require.NoError(t, db.Model(&model.TokenQuotaGrant{}).Where("token_id = ?", token.Id).Count(&count).Error)
+						assert.EqualValues(t, 1, count)
+					})
+				}
+				var wallet model.User
+				require.NoError(t, db.First(&wallet, user.Id).Error)
+				assert.Equal(t, user.Quota, wallet.Quota)
+				assert.Equal(t, user.UsedQuota, wallet.UsedQuota)
+				token := model.Token{UserId: user.Id, Key: "limit-token", RemainQuota: model.MaxTokenQuota() - 1}
+				require.NoError(t, db.Create(&token).Error)
+				for _, tc := range []struct {
+					id    string
+					quota int
+					owner int
+				}{
+					{"zero", 0, user.Id}, {"negative", -1, user.Id}, {"overflow", model.MaxTokenQuota() + 1, user.Id}, {"sum-overflow", 2, user.Id}, {"invalid id!", 1, user.Id}, {"foreign", 1, user.Id + 1},
+				} {
+					grant := model.TokenQuotaGrant{GrantID: tc.id, TokenID: token.Id, UserID: tc.owner, Quota: tc.quota, Source: "beta"}
+					require.Error(t, db.Transaction(func(tx *gorm.DB) error {
+						_, err := model.GrantTokenQuota(tx, grant)
+						return err
+					}), tc.id)
+				}
+				grant := model.TokenQuotaGrant{GrantID: "at-limit", TokenID: token.Id, UserID: user.Id, Quota: 1, Source: "beta"}
+				rollback := errors.New("payment rolled back")
+				require.ErrorIs(t, db.Transaction(func(tx *gorm.DB) error {
+					_, err := model.GrantTokenQuota(tx, grant)
+					require.NoError(t, err)
+					return rollback
+				}), rollback)
+				var count int64
+				require.NoError(t, db.Model(&model.TokenQuotaGrant{}).Where("grant_id = ?", grant.GrantID).Count(&count).Error)
+				assert.Zero(t, count)
+				for range 2 {
+					require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+						_, err := model.GrantTokenQuota(tx, grant)
+						return err
+					}))
+				}
+				otherToken := seedToken(t, db, user.Id, "other", "other-grant-key")
+				grant.TokenID = otherToken.Id
+				require.Error(t, db.Transaction(func(tx *gorm.DB) error {
+					_, err := model.GrantTokenQuota(tx, grant)
+					return err
+				}))
+				// Public writes only permit beta and never take ownership from the body.
+				for _, source := range []string{"topup", "admin", ""} {
+					ctx, rec := newAuthenticatedContext(t, "POST", "/", map[string]any{"grant_id": "http-invalid", "quota": 25, "source": source}, user.Id)
+					ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(otherToken.Id)}}
+					GrantTokenQuota(ctx)
+					assert.False(t, decodeAPIResponse(t, rec).Success)
+				}
+				ctx, rec := newAuthenticatedContext(t, "POST", "/", map[string]any{"grant_id": "http-grant", "quota": 25, "source": "beta", "user_id": 999}, user.Id)
+				ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(otherToken.Id)}}
+				GrantTokenQuota(ctx)
+				require.True(t, decodeAPIResponse(t, rec).Success, rec.Body.String())
+				assert.NotContains(t, rec.Body.String(), otherToken.Key)
+				var detail model.Token
+				require.NoError(t, common.Unmarshal(decodeAPIResponse(t, rec).Data, &detail))
+				assert.Equal(t, 125, detail.RemainQuota)
+				// The list is newest-first and keeps a deterministic grant-ID tie break.
+				for i := range 6 {
+					g := model.TokenQuotaGrant{GrantID: fmt.Sprintf("history-%d", i), TokenID: otherToken.Id, UserID: user.Id, Quota: i + 1, Source: "beta", CreatedAt: int64(100 + i/2)}
+					require.NoError(t, db.Create(&g).Error)
+				}
+				for _, tc := range []struct {
+					owner, page int
+					success     bool
+					ids         []string
+				}{
+					{user.Id, 1, true, []string{"http-grant", "history-5", "history-4", "history-3", "history-2"}},
+					{user.Id, 2, true, []string{"history-1", "history-0"}}, {user.Id + 1, 1, false, nil},
+				} {
+					ctx, rec := newAuthenticatedContext(t, "GET", fmt.Sprintf("/?p=%d&page_size=5", tc.page), nil, tc.owner)
+					ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(otherToken.Id)}}
+					GetTokenQuotaGrants(ctx)
+					result := decodeAPIResponse(t, rec)
+					require.Equal(t, tc.success, result.Success, rec.Body.String())
+					if !tc.success {
+						continue
+					}
+					var page struct {
+						Items []model.TokenQuotaGrant
+					}
+					var pageRaw common.PageInfo
+					require.NoError(t, common.Unmarshal(result.Data, &page))
+					require.NoError(t, common.Unmarshal(result.Data, &pageRaw))
+					assert.Equal(t, tc.page, pageRaw.Page)
+					assert.Equal(t, 5, pageRaw.PageSize)
+					assert.Equal(t, 7, pageRaw.Total)
+					ids := make([]string, 0, len(page.Items))
+					for _, item := range page.Items {
+						ids = append(ids, item.GrantID)
+					}
+					assert.Equal(t, tc.ids, ids)
+					assert.NotContains(t, string(result.Data), "token_id")
+					assert.NotContains(t, string(result.Data), "user_id")
+				}
+				// Repeated migration after real rows preserves grants and their primary key.
+				for range 2 {
+					require.NoError(t, db.AutoMigrate(&model.TokenQuotaGrant{}))
+				}
+				var original model.TokenQuotaGrant
+				require.NoError(t, db.Where("grant_id = ?", "http-grant").First(&original).Error)
+				assert.Equal(t, 25, original.Quota)
+				assert.Equal(t, "beta", original.Source)
+				require.Error(t, db.Create(&original).Error)
+			})
+		}
+	}
 }
