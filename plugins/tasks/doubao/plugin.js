@@ -303,7 +303,7 @@ export const meta = {
     en: "Volcengine Doubao Seedance video generation and Seedream image generation",
     zh: "火山引擎豆包 Seedance 视频生成与 Seedream 图片生成",
   },
-  version: "1.3.0",
+  version: "1.4.0",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
   models: Object.keys(VIDEO_MODELS).concat(Object.keys(IMAGE_MODELS)),
@@ -1148,6 +1148,8 @@ const legacyRenderers = {
       created_at: task.created_at,
       completed_at: task.updated_at,
     };
+    if (Number.isFinite(data.duration) && data.duration > 0) output.seconds = String(data.duration);
+    if (SEEDANCE_RESOLUTIONS.includes(data.resolution)) output.size = data.resolution;
     if (data.status === "failed") output.error = { message: data.error ? data.error.message || "" : "", code: data.error ? data.error.code || "" : "" };
     return output;
   },
@@ -1156,52 +1158,70 @@ const legacyRenderers = {
 protocols.openai_video = {
   decodeRequest: function (ctx) {
     if (!ctx.body || (ctx.body.kind !== "json" && ctx.body.kind !== "multipart")) throw new Error("JSON or multipart body required");
+    let req;
     if (ctx.body.kind === "json") {
-      if (!ctx.body.value || Array.isArray(ctx.body.value)) throw new Error("JSON object required");
-      const req = ctx.body.value;
-      const seconds = req.seconds === undefined ? req.duration : req.seconds;
-      if (seconds !== undefined && Number(seconds) !== -1 && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
-        throw new Error("seconds must be -1 or between 1 and 3600");
-      const requestBody = Object.assign({}, req, { model: ctx.model });
-      // buildSubmitRequest reads seconds; duration is accepted as its alias.
-      if (seconds !== undefined) requestBody.seconds = seconds;
-      return {
-        kind: "submit",
-        model: ctx.model,
-        action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
-        requestBody: requestBody,
-      };
-    }
-    const first = function (name) {
-      const values = (ctx.body.fields || {})[name] || [];
-      if (values.length > 1) throw new Error(name + " must be provided once");
-      return values[0];
-    };
-    const req = {};
-    const fields = ctx.body.fields || {};
-    for (const name of Object.keys(fields)) {
-      req[name] = first(name);
-    }
-    if (req.metadata !== undefined) {
-      let parsed;
-      try {
-        parsed = JSON.parse(req.metadata);
-      } catch (e) {
-        throw new Error("metadata must be a JSON object string");
+      const body = ctx.body.value;
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("JSON object required");
+      req = Object.assign({}, body);
+    } else {
+      req = {};
+      const fields = ctx.body.fields || {};
+      for (const name of Object.keys(fields)) {
+        if (fields[name].length > 1) throw new Error(name + " must be provided once");
+        req[name] = fields[name][0];
       }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("metadata must be a JSON object string");
-      req.metadata = parsed;
+      if (req.metadata !== undefined && req.metadata_json !== undefined)
+        throw new Error("metadata and metadata_json cannot both be provided");
+      const metadataText = req.metadata ?? req.metadata_json;
+      delete req.metadata_json;
+      if (metadataText !== undefined) {
+        try {
+          req.metadata = JSON.parse(metadataText);
+        } catch (e) {
+          throw new Error("metadata must be a JSON object string");
+        }
+      }
+      if (req.duration !== undefined) req.duration = Number(req.duration);
     }
-    if ((ctx.body.files || []).length) throw new Error("Doubao requires image and video references to be URLs inside metadata.content");
-    if (req.seconds !== undefined) req.seconds = Number(req.seconds);
-    else if (req.duration !== undefined) req.seconds = Number(req.duration);
-    const seconds = req.seconds === undefined ? req.duration : req.seconds;
-    if (seconds !== undefined && Number(seconds) !== -1 && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
-      throw new Error("seconds must be -1 or between 1 and 3600");
+    const metadata = Object.assign({}, objectValue(req.metadata, "metadata"));
+    const content = metadata.content === undefined ? [] : metadata.content;
+    if (!Array.isArray(content)) throw new Error("metadata.content must be an array");
+    const files = ctx.body.files || [];
+    for (const file of files) {
+      if (file.field !== "input_reference") throw new Error("unexpected file field: " + file.field);
+    }
+    const frame = files[0];
+    if (files.length > 1 || (frame && (req.input_reference !== undefined || req.image !== undefined)))
+      throw new Error("input_reference must be provided once");
+    if (frame) {
+      const mimeType = trimmed(frame.mimeType).toLowerCase().split(/\s*;/, 1)[0];
+      if (!/^image\/(png|jpeg|webp)$/.test(mimeType))
+        throw new Error("input_reference must be a PNG, JPEG, or WebP image");
+      if (frame.size <= 0 || frame.size >= MAX_INPUT_IMAGE_BYTES)
+        throw new Error("input_reference must be nonempty and smaller than 30 MB");
+      const references = content.filter((item) => item && item.type !== "text");
+      if (references.length && (references.length > 1 || references[0].type !== "image_url" || references[0].role !== "last_frame"))
+        throw new Error("input_reference can only be combined with one last_frame image");
+      metadata.content = [{
+        type: "image_url", role: "first_frame",
+        image_url: { url: { __fileRef: frame.ref, encoding: "dataUrl", mimeType, maxBytes: MAX_INPUT_IMAGE_BYTES - 1 } },
+      }].concat(content);
+    }
+    const size = trimmed(req.size).toLowerCase();
+    if (!metadata.resolution && (SEEDANCE_RESOLUTIONS.includes(size) || /^\d+[x*]\d+$/.test(size)))
+      metadata.resolution = normalizeResolution(size);
+    if (Object.keys(metadata).length) req.metadata = metadata;
+    const duration = req.seconds ?? req.duration ?? metadata.duration;
+    if (duration !== undefined) {
+      const seconds = Number(duration);
+      if (seconds !== -1 && (!Number.isInteger(seconds) || seconds <= 0 || seconds > 3600))
+        throw new Error("seconds must be -1 or between 1 and 3600");
+      req.seconds = seconds;
+    }
     return {
       kind: "submit",
       model: ctx.model,
-      action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
+      action: frame || req.input_reference || req.image || content.some((item) => item && item.type !== "text") ? "image_to_video" : "text_to_video",
       requestBody: Object.assign({}, req, { model: ctx.model }),
     };
   },

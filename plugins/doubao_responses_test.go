@@ -2,11 +2,14 @@ package plugins_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"maps"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"slices"
 	"strings"
 	"testing"
@@ -54,6 +57,116 @@ func TestDoubaoResponsesProtocol(t *testing.T) {
 		wantUsageKeys:  []string{"resolution", "tokens", "video_input"},
 		wantVendorName: "doubao",
 	})
+}
+
+func TestDoubaoOpenAIVideoFirstFrame(t *testing.T) {
+	_, plugin := newDoubaoPlugin(t)
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l1sAAAAASUVORK5CYII="
+	frame, err := base64.StdEncoding.DecodeString(png)
+	require.NoError(t, err)
+	file := map[string]any{
+		"ref": jsplugin.FileReference("input_reference", 0), "field": "input_reference",
+		"filename": "frame.png", "mimeType": "image/png", "size": len(frame),
+	}
+	decode := func(t *testing.T, model string, files ...map[string]any) (map[string]any, error) {
+		value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+			"model": model, "body": map[string]any{"kind": "multipart", "files": files, "fields": map[string][]string{
+				"model": {model}, "prompt": {"A rolling ball"}, "seconds": {"4"}, "metadata": {`{"resolution":"480p"}`},
+			}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return alibabaObject(t, value), nil
+	}
+	for _, model := range []string{"doubao-seedance-2-0-260128", "doubao-seedance-2-5-260628"} {
+		t.Run(model, func(t *testing.T) {
+			intent, err := decode(t, model, file)
+			require.NoError(t, err)
+			assert.Equal(t, "image_to_video", intent["action"])
+
+			var payload bytes.Buffer
+			writer := multipart.NewWriter(&payload)
+			part, err := writer.CreatePart(textproto.MIMEHeader{
+				"Content-Disposition": {`form-data; name="input_reference"; filename="frame.png"`},
+				"Content-Type":        {"image/png"},
+			})
+			require.NoError(t, err)
+			_, err = part.Write(frame)
+			require.NoError(t, err)
+			require.NoError(t, writer.Close())
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", &payload)
+			c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+			c.Set("task_request", intent["requestBody"])
+			info := &relaycommon.RelayInfo{
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelBaseUrl: doubaoBaseURL, UpstreamModelName: model},
+				OriginModelName: model,
+				TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public", Action: "image_to_video"},
+			}
+			adaptor := taskplugin.New(plugin)
+			adaptor.Init(info)
+			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+			reader, err := adaptor.BuildRequestBody(c, info)
+			require.NoError(t, err)
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(reader, &body))
+			assert.Equal(t, map[string]any{
+				"model": model, "duration": float64(4), "resolution": "480p", "content": []any{
+					map[string]any{"type": "image_url", "role": "first_frame", "image_url": map[string]any{"url": "data:image/png;base64," + png}},
+					map[string]any{"type": "text", "text": "A rolling ball"},
+				},
+			}, body)
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			require.NoError(t, err)
+			assert.Equal(t, "none", facts["video_input"])
+		})
+	}
+	const model = "doubao-seedance-2-5-260628"
+	_, err = decode(t, model, file, file)
+	require.ErrorContains(t, err, "input_reference must be provided once")
+	badFile := maps.Clone(file)
+	badFile["mimeType"] = "text/plain"
+	_, err = decode(t, model, badFile)
+	require.ErrorContains(t, err, "input_reference must be a PNG, JPEG, or WebP image")
+}
+
+func TestDoubaoOpenAIVideoReferences(t *testing.T) {
+	_, plugin := newDoubaoPlugin(t)
+	const model = "doubao-seedance-2-5-260628"
+	metadata := map[string]any{
+		"omni_reference_task_type": "edit", "ratio": "adaptive", "duration": float64(-1),
+		"content": []any{
+			map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "asset://image"}},
+			map[string]any{"type": "video_url", "role": "reference_video", "video_url": map[string]any{"url": "https://cdn.example/clip.mp4"}},
+			map[string]any{"type": "audio_url", "role": "reference_audio", "audio_url": map[string]any{"url": "asset://audio"}},
+		},
+	}
+	encoded, err := common.Marshal(metadata)
+	require.NoError(t, err)
+	for _, body := range []map[string]any{
+		{"kind": "json", "value": map[string]any{"size": "1280x720", "metadata": metadata}},
+		{"kind": "multipart", "fields": map[string][]string{"size": {"1280x720"}, "metadata_json": {string(encoded)}}},
+	} {
+		t.Run(body["kind"].(string), func(t *testing.T) {
+			decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": model, "body": body,
+			})
+			require.NoError(t, err)
+			intent := alibabaObject(t, decoded)
+			assert.Equal(t, "image_to_video", intent["action"])
+			driver := map[string]any{"model": model, "requestBody": intent["requestBody"], "baseUrl": doubaoBaseURL}
+			value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", driver)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]any{
+				"model": model, "resolution": "720p", "ratio": "adaptive", "duration": float64(-1),
+				"omni_reference_task_type": "edit", "content": metadata["content"],
+			}, alibabaObject(t, value)["body"])
+			value, err = plugin.Engine.Call(t.Context(), "extractUsage", driver)
+			require.NoError(t, err)
+			assert.Equal(t, "video", alibabaObject(t, value)["video_input"])
+		})
+	}
 }
 
 func newDoubaoPlugin(t *testing.T) (*jsplugin.Registry, *jsplugin.LoadedPlugin) {
