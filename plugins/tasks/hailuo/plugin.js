@@ -89,7 +89,7 @@ export const meta = {
     en: "MiniMax Hailuo video generation (text-to-video, image-to-video, and MiniMax-H3 multimodal reference)",
     zh: "MiniMax 海螺视频生成（文生视频、图生视频、MiniMax-H3 多模态参考生视频）",
   },
-  version: "1.3.0",
+  version: "1.4.0",
   author: { name: "QuantumNous" },
   channelTypes: [35],
   models: [H3_MODEL].concat(V1_MODELS),
@@ -843,7 +843,13 @@ const legacyRenderers = {
       created_at: task.created_at,
     };
     if (task.updated_at) output.completed_at = task.updated_at;
-    if (task.data && task.data.base_resp && task.data.base_resp.status_code !== 0) {
+    const h3Task = h3QueryTask(task.data);
+    if (h3Task) {
+      const facts = extractUsageOnComplete(null, null, task.data) || {};
+      if (facts.seconds !== undefined) output.seconds = String(facts.seconds);
+      if (facts.resolution) output.size = facts.resolution;
+      if (h3Task.error) output.error = { message: h3Task.error.message, code: String(h3Task.error.code || "") };
+    } else if (task.data && task.data.base_resp && task.data.base_resp.status_code !== 0) {
       output.error = { message: task.data.base_resp.status_msg, code: String(task.data.base_resp.status_code) };
     }
     return output;
@@ -854,7 +860,7 @@ protocols.openai_video = {
   decodeRequest: function (ctx) {
     if (!ctx.body || (ctx.body.kind !== "json" && ctx.body.kind !== "multipart")) throw new Error("JSON or multipart body required");
     let req;
-    let hasInputReferenceFile = false;
+    let inputReferenceFile;
     if (ctx.body.kind === "json") {
       if (!ctx.body.value || Array.isArray(ctx.body.value)) throw new Error("JSON object required");
       req = Object.assign({}, ctx.body.value);
@@ -871,13 +877,17 @@ protocols.openai_video = {
       }
       for (const file of ctx.body.files || []) {
         if (file.field !== "input_reference") throw new Error("unexpected file field: " + file.field);
-        if (hasInputReferenceFile) throw new Error("input_reference must be provided once");
-        hasInputReferenceFile = true;
+        if (inputReferenceFile) throw new Error("input_reference must be provided once");
+        inputReferenceFile = file;
       }
-      if (req.metadata !== undefined) {
+      if (req.metadata !== undefined && req.metadata_json !== undefined)
+        throw new Error("metadata and metadata_json cannot both be provided");
+      const metadataText = req.metadata ?? req.metadata_json;
+      delete req.metadata_json;
+      if (metadataText !== undefined) {
         let parsed;
         try {
-          parsed = JSON.parse(req.metadata);
+          parsed = JSON.parse(metadataText);
         } catch (e) {
           throw new Error("metadata must be a JSON object string");
         }
@@ -889,10 +899,17 @@ protocols.openai_video = {
     }
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined) req.duration = Number(seconds);
-    if (hasInputReferenceFile) {
-      req.metadata = Object.assign({}, req.metadata || {}, {
-        first_frame_image: { __fileRef: "request_file:input_reference", encoding: "dataUrl", maxBytes: 20971520 },
-      });
+    const comboModel = ctx.upstreamModel || ctx.model;
+    if (inputReferenceFile) {
+      const metadata = req.metadata || {};
+      if (req.input_reference !== undefined || req.image !== undefined || metadata.first_frame_image !== undefined)
+        throw new Error("input_reference must be provided once");
+      const frame = { __fileRef: inputReferenceFile.ref, encoding: "dataUrl", maxBytes: 20971520 };
+      if (isH3(comboModel) && Array.isArray(metadata.content)) {
+        req.metadata = Object.assign({}, metadata, { content: [h3MediaItem("image_url", frame, "first_frame")].concat(metadata.content) });
+      } else {
+        req.metadata = Object.assign({}, metadata, { first_frame_image: frame });
+      }
     } else {
       const image = trimmed(req.input_reference || req.image);
       if (image) {
@@ -900,9 +917,8 @@ protocols.openai_video = {
         if (!req.metadata.first_frame_image) req.metadata.first_frame_image = image;
       }
     }
-    const hasImage = hasHailuoImage(req, hasInputReferenceFile);
+    const hasImage = isH3(comboModel) ? h3HasVisualContent(h3Content(req)) : hasHailuoImage(req, Boolean(inputReferenceFile));
     const duration = req.duration === undefined ? undefined : Number(req.duration);
-    const comboModel = ctx.upstreamModel || ctx.model;
     validateHailuoCombo(comboModel, duration, outboundResolution(req, comboModel), hasImage);
     return {
       kind: "submit",
