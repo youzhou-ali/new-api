@@ -428,6 +428,7 @@ type RecordTaskBillingLogParams struct {
 	Group     string
 	Other     *LogOther
 	NodeName  string // 任务发起节点；为空时回退当前节点
+	Execution *TaskExecutionSnapshot
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
@@ -456,6 +457,10 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		TokenId:   params.TokenId,
 		Group:     params.Group,
 		Other:     other.JSONString(),
+	}
+	if params.Execution != nil {
+		log.UsageTag = params.Execution.UsageTag
+		log.UsageRef = params.Execution.UsageRef
 	}
 	err := createLog(log)
 	if err != nil {

@@ -141,6 +141,8 @@ type TaskPrivateData struct {
 type TaskExecutionSnapshot struct {
 	RequestID   string              `json:"request_id,omitempty"`
 	RequestPath string              `json:"request_path,omitempty"`
+	UsageTag    string              `json:"usage_tag,omitempty"`
+	UsageRef    string              `json:"usage_ref,omitempty"`
 	TaskPlugin  *TaskPluginSnapshot `json:"task_plugin,omitempty"`
 }
 
