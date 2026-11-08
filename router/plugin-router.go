@@ -30,6 +30,8 @@ type pluginDispatchState struct {
 	writer     *gatedResponseWriter
 	requestID  string
 	language   string
+	usageTag   string
+	usageRef   string
 }
 
 func (s *pluginDispatchState) markHit() {
@@ -312,6 +314,12 @@ func importPluginDispatchState() gin.HandlerFunc {
 			if state.language != "" {
 				c.Set(string(constant.ContextKeyLanguage), state.language)
 			}
+			if state.usageTag != "" {
+				c.Set(common.UsageTagKey, state.usageTag)
+			}
+			if state.usageRef != "" {
+				c.Set(common.UsageRefKey, state.usageRef)
+			}
 		}
 		c.Set(middleware.RouteTagKey, "relay")
 		c.Next()
@@ -371,6 +379,8 @@ func (d *pluginRouteDispatcher) dispatch(c *gin.Context) {
 		generation: generation,
 		requestID:  c.GetString(common.RequestIdKey),
 		language:   c.GetString(string(constant.ContextKeyLanguage)),
+		usageTag:   c.GetString(common.UsageTagKey),
+		usageRef:   c.GetString(common.UsageRefKey),
 	}
 	gatedWriter := newGatedResponseWriter(c.Writer)
 	state.writer = gatedWriter
