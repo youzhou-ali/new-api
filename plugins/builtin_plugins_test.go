@@ -37,6 +37,9 @@ func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing
 		{"GET", "/doubao/api/v3/contents/generations/tasks/:task_id", "doubao", jsplugin.RouteTypeQuery, "", "taskStatus"},
 		{"POST", "/doubao/api/v3/images/generations", "doubao", jsplugin.RouteTypeSubmit, "", "imageCreated"},
 		{"POST", "/doubao/api/v3/tts/create", "seed-audio", jsplugin.RouteTypeSubmit, "", "audioCreated"},
+		{"POST", "/doubao/api/v3/tts/unidirectional", "doubao-speech", jsplugin.RouteTypeSubmit, "", "speech"},
+		{"POST", "/doubao/api/v3/auc/bigmodel/submit", "doubao-speech", jsplugin.RouteTypeSubmit, "", "transcription"},
+		{"GET", "/doubao/api/v3/auc/bigmodel/tasks/:task_id", "doubao-speech", jsplugin.RouteTypeQuery, "", "transcription"},
 		{"POST", "/xai/v1/videos/generations", "xai", jsplugin.RouteTypeSubmit, "", "videoCreated"},
 		{"POST", "/xai/v1/videos/edits", "xai", jsplugin.RouteTypeSubmit, "", "videoCreated"},
 		{"POST", "/xai/v1/videos/extensions", "xai", jsplugin.RouteTypeSubmit, "", "videoCreated"},
@@ -104,7 +107,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			actualKeys = append(actualKeys, entry.Name())
 		}
 	}
-	assert.ElementsMatch(t, append([]string{"seed-audio"}, responsesPluginKeys...), actualKeys)
+	assert.ElementsMatch(t, append([]string{"seed-audio", "doubao-speech"}, responsesPluginKeys...), actualKeys)
 
 	for _, key := range responsesPluginKeys {
 		t.Run(key, func(t *testing.T) {

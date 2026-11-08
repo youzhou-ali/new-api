@@ -110,6 +110,10 @@ const maxTaskPluginPersistedJSONBytes = 1 << 20
 // keeps only a small result. Keep the persisted snapshot limit separate.
 const maxTaskPluginInlineJSONBytes = 64 << 20
 
+// A native response discarded after delivery may include audio chunks. Keep
+// a separate limit for the JSON sent to the client.
+const maxTaskPluginInlineResultBytes = 8 << 20
+
 type TaskAdaptor struct {
 	plugin         *pluginruntime.LoadedPlugin
 	info           *relaycommon.RelayInfo
@@ -499,6 +503,12 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, bod
 	return channel.DoTaskApiRequest(a, c, info, body)
 }
 
+func (a *TaskAdaptor) discardsImmediateResult(c *gin.Context) bool {
+	value, _ := c.Get(pluginruntime.ContextKeyPinnedRoute)
+	pinned, ok := value.(pluginruntime.PinnedRoute)
+	return ok && pinned.Plugin == a.plugin && pinned.Route.RetainResult != nil && !*pinned.Route.RetainResult
+}
+
 func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (_ *channel.TaskSubmitResponse, taskErr *dto.TaskError) {
 	started := time.Now()
 	var responseBody any
@@ -506,6 +516,7 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	streaming := a.submit != nil && a.submit.ResponseType == "sse"
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	acceptedStream := streaming || mediaType == "text/event-stream"
+	discardsResult := a.discardsImmediateResult(c)
 	defer func() {
 		if acceptedStream && taskErr != nil {
 			taskErr.NoRetry = true
@@ -521,11 +532,8 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		responseBody, err = a.readSubmitEvents(c.Request.Context(), resp, a.submitContext(c, info))
 	} else {
 		limit := maxTaskPluginPersistedJSONBytes
-		if value, exists := c.Get(pluginruntime.ContextKeyPinnedRoute); exists {
-			if pinned, ok := value.(pluginruntime.PinnedRoute); ok && pinned.Plugin == a.plugin &&
-				pinned.Route.RetainResult != nil && !*pinned.Route.RetainResult {
-				limit = maxTaskPluginInlineJSONBytes
-			}
+		if discardsResult {
+			limit = maxTaskPluginInlineJSONBytes
 		}
 		var body []byte
 		body, err = io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
@@ -575,8 +583,12 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	}
 	var taskData []byte
 	if parsed.TaskData != nil {
+		limit := maxTaskPluginPersistedJSONBytes
+		if discardsResult && parsed.Immediate != nil && (parsed.Immediate.Status == model.TaskStatusSuccess || parsed.Immediate.Status == model.TaskStatusFailure) {
+			limit = maxTaskPluginInlineResultBytes
+		}
 		taskData, err = common.Marshal(parsed.TaskData)
-		if err != nil || len(taskData) > maxTaskPluginPersistedJSONBytes {
+		if err != nil || len(taskData) > limit {
 			if err == nil {
 				err = fmt.Errorf("task data exceeds size limit")
 			}
