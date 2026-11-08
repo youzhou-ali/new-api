@@ -2,6 +2,8 @@
 
 Cube 服务端调用 `https://packapi.top`。提交、查询和模型列表都使用 `Authorization: Bearer <PackAPI API Key>`。`GET /v1/models` 返回当前 Key 可用的模型。调用时可发送 `X-Usage-Tag` 和 `X-Usage-Ref`，分别传 Cube 空间 ID 和 Run ID，便于对账。
 
+三个模型均已在 PackAPI 生产启用。使用 `default` 分组的 Key 调用，若 Key 启用了模型白名单，请允许对应的模型 ID。
+
 | 用途 | 模型 ID | 方法和路径 | 响应 |
 | --- | --- | --- | --- |
 | 语音、音效与配乐生成 | `seed-audio-1.0` | `POST /doubao/api/v3/tts/create` | JSON，含下载 URL 和生成时长 |
@@ -79,10 +81,8 @@ curl --fail-with-body --silent --show-error \
 | Seed TTS 2.0 | $3／万字符 | 上游实际计费字符数 `usage.text_words` |
 | Seed ASR 录音文件 2.0 | $0.80／小时 | 上游 `audio_info.duration`，以毫秒换算小时 |
 
-美元字段使用火山引擎人民币刊例的原数值。Cube 每积分对应 5,000 PackAPI quota，即 PackAPI $0.01。录音转写在上游返回时长前按 5 小时上限预留额度，成功后按实际时长结算，失败任务退款。 [豆包语音官方刊例](https://docs.volcengine.com/docs/DoubaoVoice/Billinginstructions-21?lang=zh)
+美元字段使用火山引擎人民币刊例的原数值。Cube 每积分对应 5,000 PackAPI quota，即 PackAPI $0.01。录音转写提交时需要足够额度预留 5 小时上限（400 积分），成功后按实际时长结算并退还差额，失败任务退款。 [豆包语音官方刊例](https://docs.volcengine.com/docs/DoubaoVoice/Billinginstructions-21?lang=zh)
 
 提交失败时检查 HTTP 状态和 JSON `error`。处理成功的异步任务以查询响应的 `status` 为准。排查时记录 PackAPI 请求 ID 和任务 ID，避免记录 API Key、带签名的素材地址或完整 Base64 音频。
 
-## 专用音乐模型
-
-专用音乐 API 仍在等待上游凭据。Google Lyria 3.5 支持从文字或图片生成整首歌曲，官方后付费价为 $0.08／首。当前 Cube 可用 `seed-audio-1.0` 生成短配乐及音效。 [Lyria 音乐生成](https://ai.google.dev/gemini-api/docs/music-generation) · [Gemini API 价格](https://ai.google.dev/gemini-api/docs/pricing)
+2026-11-08，PackAPI 生产版本 `357951c8b1d5` 的实测结果为语音合成 12 字符扣 1,800 quota（0.36 积分），录音转写 6.312 秒退差后净扣 701 quota（约 0.14 积分）。合成 MP3 已解码验证，转写成功返回文本，两笔账单均保留 `X-Usage-Tag` 和 `X-Usage-Ref`。
