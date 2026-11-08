@@ -232,18 +232,25 @@ func TestPluginInnerContextImportsRequestMetadataAndTrustedProxyConfig(t *testin
 			"language":   c.GetString(string(constant.ContextKeyLanguage)),
 			"client_ip":  c.ClientIP(),
 			"route_tag":  c.GetString(middleware.RouteTagKey),
+			"usage_tag":  c.GetString(common.UsageTagKey),
+			"usage_ref":  c.GetString(common.UsageRefKey),
+			"raw_tag":    c.GetHeader(common.UsageTagKey),
+			"raw_ref":    c.GetHeader(common.UsageRefKey),
 		})
 	})
 	outer, registry := newPluginRouterTestWithProxies(t, []*jsplugin.LoadedPlugin{plugin}, handlers, []string{"127.0.0.0/8"})
+	outer.Use(middleware.UsageTags())
 	outer.NoRoute((&pluginRouteDispatcher{registry: registry}).dispatch)
 
 	request := httptest.NewRequest(http.MethodGet, "/vendor/context", nil)
 	request.RemoteAddr = "127.0.0.1:1234"
 	request.Header.Set("X-Forwarded-For", "203.0.113.20")
+	request.Header.Set(common.UsageTagKey, "space-1")
+	request.Header.Set(common.UsageRefKey, "run-2")
 	recorder := httptest.NewRecorder()
 	outer.ServeHTTP(recorder, request)
 
-	assert.JSONEq(t, `{"request_id":"request-phase-two","language":"zh-CN","client_ip":"203.0.113.20","route_tag":"relay"}`, recorder.Body.String())
+	assert.JSONEq(t, `{"request_id":"request-phase-two","language":"zh-CN","client_ip":"203.0.113.20","route_tag":"relay","usage_tag":"space-1","usage_ref":"run-2","raw_tag":"","raw_ref":""}`, recorder.Body.String())
 }
 
 func TestPluginRequestPinsGenerationAcrossHotSwap(t *testing.T) {

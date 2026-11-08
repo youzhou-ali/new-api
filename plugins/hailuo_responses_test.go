@@ -652,6 +652,44 @@ func TestHailuoH3PassesOpenAIVideoDecode(t *testing.T) {
 	requestBody, ok := intent["requestBody"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, float64(12), requestBody["duration"])
+	for _, tc := range []struct {
+		name, metadata, wantMedia string
+		files                     []any
+	}{
+		{
+			name:     "uploaded first frame and a tail image",
+			metadata: `{"content":[{"type":"image_url","role":"last_frame","image_url":{"url":"https://cdn.example/end.png"}}]}`,
+			files:    []any{map[string]any{"field": "input_reference", "ref": jsplugin.FileReference("input_reference", 0)}},
+			wantMedia: `[{"type":"text","text":"p"},
+{"type":"image_url","role":"first_frame","image_url":{"url":{"__fileRef":"request_file:input_reference","encoding":"dataUrl","maxBytes":20971520}}},
+{"type":"image_url","role":"last_frame","image_url":{"url":"https://cdn.example/end.png"}}]`,
+		},
+		{
+			name: "mixed video and audio references",
+			metadata: `{"content":[{"type":"video_url","role":"reference_video","video_url":{"url":"https://cdn.example/clip.mp4"}},
+{"type":"audio_url","role":"reference_audio","audio_url":{"url":"https://cdn.example/voice.mp3"}}]}`,
+			wantMedia: `[{"type":"text","text":"p"},
+{"type":"video_url","role":"reference_video","video_url":{"url":"https://cdn.example/clip.mp4"}},
+{"type":"audio_url","role":"reference_audio","audio_url":{"url":"https://cdn.example/voice.mp3"}}]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": "MiniMax-H3", "body": map[string]any{"kind": "multipart", "files": tc.files, "fields": map[string][]string{
+					"prompt": {"p"}, "seconds": {"4"}, "metadata_json": {tc.metadata},
+				}},
+			})
+			require.NoError(t, err)
+			intent := alibabaObject(t, value)
+			assert.Equal(t, "image_to_video", intent["action"])
+			driver := hailuoH3SubmitContext(intent["requestBody"].(map[string]any))
+			descriptor := callHailuoHook(t, plugin, "buildSubmitRequest", driver)
+			assert.Equal(t, "https://api.minimax.example/v2/video_generation", descriptor["url"])
+			encoded, err := common.Marshal(descriptor["body"].(map[string]any)["content"])
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.wantMedia, string(encoded))
+		})
+	}
 }
 
 // A New API channel reaches this plugin on another gateway. The downstream

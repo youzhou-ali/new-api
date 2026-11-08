@@ -85,6 +85,123 @@ func TestTaskAdaptorRejectsDeprecatedClientResponse(t *testing.T) {
 	assert.Contains(t, taskErr.Error.Error(), "must not return clientResponse")
 }
 
+func TestSeedAudioSettlesOnOriginalDurationAndKeepsOnlyDownloadURL(t *testing.T) {
+	const modelName = "seed-audio-1.0"
+	const path = "/doubao/api/v3/tts/create"
+	source, err := plugins.Source("seed-audio")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "seed-audio"})
+	require.NoError(t, err)
+	generation := registry.Generation()
+	binding, found := generation.LookupDeclaredRoute(http.MethodPost, path)
+	require.True(t, found)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType: constant.ChannelTypeTaskPlugin, ChannelBaseUrl: "https://openspeech.bytedance.com",
+			ApiKey: "test-speech-key", UpstreamModelName: modelName,
+		},
+		OriginModelName: modelName,
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+	adaptor := New(plugin)
+	adaptor.Init(info)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+	c.Set(pluginruntime.ContextKeyPinnedRoute, pluginruntime.PinnedRoute{
+		Generation: generation, Plugin: binding.Plugin, Route: binding.Route,
+	})
+	c.Set("task_request", map[string]any{"model": modelName, "text_prompt": "Generate a bell sound"})
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+	_, err = adaptor.BuildRequestBody(c, info)
+	require.NoError(t, err)
+	assert.Equal(t, "test-speech-key", adaptor.submit.Headers["X-Api-Key"])
+	assert.Equal(t, "https://openspeech.bytedance.com/api/v3/tts/create", adaptor.submit.URL)
+	reserved, err := adaptor.ExtractUsageFactsValidated(c, info)
+	require.NoError(t, err)
+	assert.Equal(t, 120.0, reserved["seconds"])
+
+	body := `{"url":"https://example.test/audio.mp3","original_duration":7.5,"duration":15,"audio":"` +
+		strings.Repeat("A", maxTaskPluginPersistedJSONBytes) + `"}`
+	response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+	parsed, taskErr := adaptor.ParseResponse(c, response, info)
+	require.Nil(t, taskErr)
+	require.NotNil(t, parsed.Immediate)
+	assert.Equal(t, model.TaskStatusSuccess, parsed.Immediate.Status)
+	assert.Equal(t, 7.5, parsed.Immediate.UsageFacts["seconds"])
+	assert.JSONEq(t, `{"url":"https://example.test/audio.mp3","original_duration":7.5,"duration":15}`, string(parsed.TaskData))
+}
+
+func TestDoubaoSpeechReturnsInlineMP3AndMetersProviderCharacters(t *testing.T) {
+	const modelName = "seed-tts-2.0"
+	const path = "/doubao/api/v3/tts/unidirectional"
+	source, err := plugins.Source("doubao-speech")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "doubao-speech"})
+	require.NoError(t, err)
+	generation := registry.Generation()
+	binding, found := generation.LookupDeclaredRoute(http.MethodPost, path)
+	require.True(t, found)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeTaskPlugin,
+			ChannelBaseUrl: "https://openspeech.bytedance.com", ApiKey: "test-speech-key", UpstreamModelName: modelName},
+		OriginModelName: modelName,
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+	adaptor := New(plugin)
+	adaptor.Init(info)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+	c.Set(pluginruntime.ContextKeyPinnedRoute, pluginruntime.PinnedRoute{Generation: generation, Plugin: binding.Plugin, Route: binding.Route})
+	c.Set("task_request", map[string]any{"text": "你好！", "speaker": "zh_female_vv_uranus_bigtts", "speechRate": 0})
+	_, err = adaptor.BuildRequestBody(c, info)
+	require.NoError(t, err)
+	assert.Equal(t, modelName, adaptor.submit.Headers["X-Api-Resource-Id"])
+	assert.Equal(t, "*", adaptor.submit.Headers["X-Control-Require-Usage-Tokens-Return"])
+	reserved, err := adaptor.ExtractUsageFactsValidated(c, info)
+	require.NoError(t, err)
+	assert.Equal(t, 0.003, reserved["kilochars"])
+
+	chunk := strings.Repeat("A", maxTaskPluginPersistedJSONBytes)
+	body := `{"code":0,"data":"` + chunk + `"}` + "\n" + `{"code":20000000,"usage":{"text_words":2}}`
+	response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader(body))}
+	parsed, taskErr := adaptor.ParseResponse(c, response, info)
+	require.Nil(t, taskErr)
+	require.NotNil(t, parsed.Immediate)
+	assert.Equal(t, model.TaskStatusSuccess, parsed.Immediate.Status)
+	assert.Equal(t, 0.002, parsed.Immediate.UsageFacts["kilochars"])
+	var data struct {
+		AudioChunks []string `json:"audio_chunks"`
+		MIMEType    string   `json:"mime_type"`
+	}
+	require.NoError(t, json.Unmarshal(parsed.TaskData, &data))
+	assert.Equal(t, "audio/mpeg", data.MIMEType)
+	require.Len(t, data.AudioChunks, 1)
+	assert.Len(t, data.AudioChunks[0], len(chunk))
+}
+
+func TestDoubaoASRPollsStatusHeaderAndMetersRecordingDuration(t *testing.T) {
+	const modelName = "volc.seedasr.auc"
+	source, err := plugins.Source("doubao-speech")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "doubao-speech"})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://openspeech.bytedance.com"}})
+	task := &model.Task{TaskID: "task_public", Properties: model.Properties{OriginModelName: modelName}}
+	response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Api-Status-Code": {"20000000"}}}
+	result, err := adaptor.ParseTaskResult(task, response, []byte(`{"audio_info":{"duration":6312},"result":{"text":"你好。"}}`))
+	require.NoError(t, err)
+	assert.Equal(t, model.TaskStatusSuccess, result.Status)
+	assert.InDelta(t, 6.312/3600, result.UsageFacts["hours"], 1e-12)
+	response.Header.Set("X-Api-Status-Code", "20000002")
+	result, err = adaptor.ParseTaskResult(task, response, []byte(`{}`))
+	require.NoError(t, err)
+	assert.Equal(t, model.TaskStatusInProgress, result.Status)
+	assert.Empty(t, result.UsageFacts)
+}
+
 func TestTaskAdaptorBuildsMultipartFromOpaqueFileReference(t *testing.T) {
 	// The plugin forwards the client's Content-Type, whose boundary is not the one of the rebuilt body.
 	source := `

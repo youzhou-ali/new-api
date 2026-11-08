@@ -1069,6 +1069,42 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 	assert.Equal(t, actualQuota-preConsumed, log.Quota)
 }
 
+func TestAsyncTaskBillingLogsKeepSubmitUsageMarkers(t *testing.T) {
+	truncate(t)
+	const userID, tokenID, channelID = 1, 1, 1
+	const preConsumed, actualQuota = 2000, 3000
+	seedUser(t, userID, 10000)
+	seedToken(t, tokenID, userID, "sk-task-markers", 5000)
+	seedChannel(t, channelID)
+	seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
+
+	submit, _ := gin.CreateTestContext(httptest.NewRecorder())
+	submit.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	submit.Set(common.UsageTagKey, "space-video")
+	submit.Set(common.UsageRefKey, "run-video")
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.Execution = TaskExecutionSnapshotFromContext(submit)
+	require.NoError(t, model.DB.Create(task).Error)
+	var polled model.Task
+	require.NoError(t, model.DB.First(&polled, task.ID).Error)
+
+	RecalculateTaskQuota(context.Background(), &polled, actualQuota, common.NewMessage("settled by upstream usage"))
+	charge := getLastLog(t)
+	require.NotNil(t, charge)
+	assert.Equal(t, model.LogTypeConsume, charge.Type)
+	assert.Equal(t, actualQuota-preConsumed, charge.Quota)
+	assert.Equal(t, "space-video", charge.UsageTag)
+	assert.Equal(t, "run-video", charge.UsageRef)
+
+	require.True(t, RefundTaskQuota(context.Background(), &polled, "task failed"))
+	refund := getLastLog(t)
+	require.NotNil(t, refund)
+	assert.Equal(t, model.LogTypeRefund, refund.Type)
+	assert.Equal(t, actualQuota, refund.Quota)
+	assert.Equal(t, charge.UsageTag, refund.UsageTag)
+	assert.Equal(t, charge.UsageRef, refund.UsageRef)
+}
+
 func TestRecalculate_NegativeDelta(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()
