@@ -187,9 +187,11 @@ func TestResponsesWSRequestRunnerRefreshesBillingContextAndCleansBody(t *testing
 }
 
 func TestResponsesWSRequestRunnerRejectsRevokedCredentials(t *testing.T) {
+	require.NoError(t, i18n.Init())
 	for _, tc := range []struct {
 		name   string
 		status int
+		code   string
 		update func(*testing.T, *model.User, *model.Token)
 	}{
 		{name: "disabled token", status: http.StatusUnauthorized, update: func(t *testing.T, _ *model.User, token *model.Token) {
@@ -198,7 +200,7 @@ func TestResponsesWSRequestRunnerRejectsRevokedCredentials(t *testing.T) {
 		{name: "expired token", status: http.StatusUnauthorized, update: func(t *testing.T, _ *model.User, token *model.Token) {
 			require.NoError(t, model.DB.Model(token).Update("expired_time", time.Now().Add(-time.Minute).Unix()).Error)
 		}},
-		{name: "exhausted token", status: http.StatusUnauthorized, update: func(t *testing.T, _ *model.User, token *model.Token) {
+		{name: "exhausted token", status: http.StatusForbidden, code: "token_quota_exhausted", update: func(t *testing.T, _ *model.User, token *model.Token) {
 			require.NoError(t, model.DB.Model(token).Update("remain_quota", 0).Error)
 		}},
 		{name: "disabled user", status: http.StatusForbidden, update: func(t *testing.T, user *model.User, _ *model.Token) {
@@ -223,6 +225,9 @@ func TestResponsesWSRequestRunnerRejectsRevokedCredentials(t *testing.T) {
 			})
 			require.NotNil(t, apiError)
 			assert.Equal(t, tc.status, apiError.StatusCode)
+			if tc.code != "" {
+				assert.Equal(t, tc.code, apiError.ToOpenAIError().Code)
+			}
 			assert.False(t, called)
 			assert.NotContains(t, apiError.Error(), token.Key)
 		})
@@ -597,12 +602,14 @@ func TestResponsesWebSocketReusesConnectionAndSettlesEachRequest(t *testing.T) {
 	_, data, err := client.ReadMessage()
 	require.NoError(t, err)
 	var rejection struct {
-		Type   string `json:"type"`
-		Status int    `json:"status"`
+		Type   string            `json:"type"`
+		Status int               `json:"status"`
+		Error  types.OpenAIError `json:"error"`
 	}
 	require.NoError(t, common.Unmarshal(data, &rejection))
 	assert.Equal(t, "error", rejection.Type)
-	assert.Equal(t, http.StatusUnauthorized, rejection.Status)
+	assert.Equal(t, http.StatusForbidden, rejection.Status)
+	assert.Equal(t, "token_quota_exhausted", rejection.Error.Code)
 	assert.Equal(t, int32(1), fixture.connections.Load())
 	assert.Empty(t, received, "exhausted token must be rejected before contacting upstream")
 	var logs []model.Log
