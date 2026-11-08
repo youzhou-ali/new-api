@@ -106,6 +106,10 @@ const maxTaskArtifacts = 64
 // maxTaskPluginPersistedJSONBytes is the shared ceiling for taskData and plugin state.
 const maxTaskPluginPersistedJSONBytes = 1 << 20
 
+// Native immediate submissions can carry inline media even when the plugin
+// keeps only a small result. Keep the persisted snapshot limit separate.
+const maxTaskPluginInlineJSONBytes = 64 << 20
+
 type TaskAdaptor struct {
 	plugin         *pluginruntime.LoadedPlugin
 	info           *relaycommon.RelayInfo
@@ -516,15 +520,20 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		defer resp.Body.Close()
 		responseBody, err = a.readSubmitEvents(c.Request.Context(), resp, a.submitContext(c, info))
 	} else {
+		limit := maxTaskPluginPersistedJSONBytes
+		if value, exists := c.Get(pluginruntime.ContextKeyPinnedRoute); exists {
+			if pinned, ok := value.(pluginruntime.PinnedRoute); ok && pinned.Plugin == a.plugin &&
+				pinned.Route.RetainResult != nil && !*pinned.Route.RetainResult {
+				limit = maxTaskPluginInlineJSONBytes
+			}
+		}
 		var body []byte
-		body, err = io.ReadAll(io.LimitReader(resp.Body, maxTaskPluginPersistedJSONBytes+1))
-		if err == nil && len(body) > maxTaskPluginPersistedJSONBytes {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+		if err == nil && len(body) > limit {
 			err = fmt.Errorf("task submit response exceeds size limit")
 		}
-		responseBody = string(body)
-		var decoded any
-		if err == nil && common.Unmarshal(body, &decoded) == nil {
-			responseBody = decoded
+		if err == nil && common.Unmarshal(body, &responseBody) != nil {
+			responseBody = string(body)
 		}
 	}
 	if err != nil {

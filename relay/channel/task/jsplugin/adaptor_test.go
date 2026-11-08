@@ -85,6 +85,53 @@ func TestTaskAdaptorRejectsDeprecatedClientResponse(t *testing.T) {
 	assert.Contains(t, taskErr.Error.Error(), "must not return clientResponse")
 }
 
+func TestSeedAudioSettlesOnOriginalDurationAndKeepsOnlyDownloadURL(t *testing.T) {
+	const modelName = "seed-audio-1.0"
+	const path = "/doubao/api/v3/tts/create"
+	source, err := plugins.Source("seed-audio")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "seed-audio"})
+	require.NoError(t, err)
+	generation := registry.Generation()
+	binding, found := generation.LookupDeclaredRoute(http.MethodPost, path)
+	require.True(t, found)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType: constant.ChannelTypeTaskPlugin, ChannelBaseUrl: "https://openspeech.bytedance.com",
+			ApiKey: "test-speech-key", UpstreamModelName: modelName,
+		},
+		OriginModelName: modelName,
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+	adaptor := New(plugin)
+	adaptor.Init(info)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+	c.Set(pluginruntime.ContextKeyPinnedRoute, pluginruntime.PinnedRoute{
+		Generation: generation, Plugin: binding.Plugin, Route: binding.Route,
+	})
+	c.Set("task_request", map[string]any{"model": modelName, "text_prompt": "Generate a bell sound"})
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+	_, err = adaptor.BuildRequestBody(c, info)
+	require.NoError(t, err)
+	assert.Equal(t, "test-speech-key", adaptor.submit.Headers["X-Api-Key"])
+	assert.Equal(t, "https://openspeech.bytedance.com/api/v3/tts/create", adaptor.submit.URL)
+	reserved, err := adaptor.ExtractUsageFactsValidated(c, info)
+	require.NoError(t, err)
+	assert.Equal(t, 120.0, reserved["seconds"])
+
+	body := `{"url":"https://example.test/audio.mp3","original_duration":7.5,"duration":15,"audio":"` +
+		strings.Repeat("A", maxTaskPluginPersistedJSONBytes) + `"}`
+	response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+	parsed, taskErr := adaptor.ParseResponse(c, response, info)
+	require.Nil(t, taskErr)
+	require.NotNil(t, parsed.Immediate)
+	assert.Equal(t, model.TaskStatusSuccess, parsed.Immediate.Status)
+	assert.Equal(t, 7.5, parsed.Immediate.UsageFacts["seconds"])
+	assert.JSONEq(t, `{"url":"https://example.test/audio.mp3","original_duration":7.5,"duration":15}`, string(parsed.TaskData))
+}
+
 func TestTaskAdaptorBuildsMultipartFromOpaqueFileReference(t *testing.T) {
 	// The plugin forwards the client's Content-Type, whose boundary is not the one of the rebuilt body.
 	source := `
