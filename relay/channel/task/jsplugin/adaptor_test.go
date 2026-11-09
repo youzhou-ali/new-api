@@ -183,22 +183,65 @@ func TestDoubaoSpeechReturnsInlineMP3AndMetersProviderCharacters(t *testing.T) {
 
 func TestDoubaoASRPollsStatusHeaderAndMetersRecordingDuration(t *testing.T) {
 	const modelName = "volc.seedasr.auc"
+	const audioURL = "https://recordings.example.test/clip?signature=a%2Fb"
 	source, err := plugins.Source("doubao-speech")
 	require.NoError(t, err)
 	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "doubao-speech"})
 	require.NoError(t, err)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:     &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeTaskPlugin, ChannelBaseUrl: "https://openspeech.bytedance.com", UpstreamModelName: modelName},
+		OriginModelName: modelName,
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+	for _, format := range []string{"m4a", "aac"} {
+		adaptor := New(plugin)
+		adaptor.Init(info)
+		resolved, err := plugin.Engine.CallPath(t.Context(), "native", []string{"transcribe"}, map[string]any{
+			"body": map[string]any{"kind": "json", "value": map[string]any{"model": modelName, "audio_url": audioURL, "format": format}},
+		})
+		require.NoError(t, err)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/doubao/api/v3/auc/bigmodel/submit", nil)
+		c.Set("task_request", resolved.(map[string]any)["requestBody"])
+		body, err := adaptor.BuildRequestBody(c, info)
+		require.NoError(t, err)
+		raw, err := io.ReadAll(body)
+		require.NoError(t, err)
+		assert.JSONEq(t, fmt.Sprintf(`{"audio":{"url":%q,"format":%q},"request":{"model_name":"bigmodel","enable_itn":true,"enable_punc":true,"show_utterances":true}}`, audioURL, format), string(raw))
+	}
+
 	adaptor := New(plugin)
-	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://openspeech.bytedance.com"}})
+	adaptor.Init(info)
 	task := &model.Task{TaskID: "task_public", Properties: model.Properties{OriginModelName: modelName}}
 	response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Api-Status-Code": {"20000000"}}}
-	result, err := adaptor.ParseTaskResult(task, response, []byte(`{"audio_info":{"duration":6312},"result":{"text":"你好。"}}`))
+	const rawResult = `{"audio_info":{"duration":6312},"result":{"text":"你好。再见。","utterances":[{"start_time":0,"end_time":825,"text":"你好。","words":[{}]},{"start_time":1010,"end_time":2300,"text":"再见。"},{"start_time":-1,"end_time":30,"text":"invalid"}]}}`
+	result, err := adaptor.ParseTaskResult(task, response, []byte(rawResult))
 	require.NoError(t, err)
 	assert.Equal(t, model.TaskStatusSuccess, result.Status)
 	assert.InDelta(t, 6.312/3600, result.UsageFacts["hours"], 1e-12)
+	for _, tc := range []struct{ data, expected string }{
+		{rawResult, `{"id":"task_public","model":"volc.seedasr.auc","status":"completed","duration_seconds":6.312,"text":"你好。再见。","utterances":[{"start_ms":0,"end_ms":825,"text":"你好。"},{"start_ms":1010,"end_ms":2300,"text":"再见。"}]}`},
+		{`{"audio_info":{"duration":6312},"result":{"text":"你好。"}}`, `{"id":"task_public","model":"volc.seedasr.auc","status":"completed","duration_seconds":6.312,"text":"你好。","utterances":[]}`},
+	} {
+		var data any
+		require.NoError(t, json.Unmarshal([]byte(tc.data), &data))
+		view, err := plugin.Engine.CallPath(t.Context(), "native", []string{"transcription"}, nil, map[string]any{
+			"task_id": task.TaskID, "status": result.Status, "data": data,
+		})
+		require.NoError(t, err)
+		raw, err := json.Marshal(view)
+		require.NoError(t, err)
+		assert.JSONEq(t, tc.expected, string(raw))
+	}
 	response.Header.Set("X-Api-Status-Code", "20000002")
 	result, err = adaptor.ParseTaskResult(task, response, []byte(`{}`))
 	require.NoError(t, err)
 	assert.Equal(t, model.TaskStatusInProgress, result.Status)
+	assert.Empty(t, result.UsageFacts)
+	response.Header.Set("X-Api-Status-Code", "20000003")
+	result, err = adaptor.ParseTaskResult(task, response, []byte(`{"audio_info":{"duration":3018},"result":{"text":""}}`))
+	require.NoError(t, err)
+	assert.Equal(t, model.TaskStatusFailure, result.Status)
 	assert.Empty(t, result.UsageFacts)
 }
 
