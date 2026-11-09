@@ -238,6 +238,11 @@ func TestDoubaoASRPollsStatusHeaderAndMetersRecordingDuration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, model.TaskStatusInProgress, result.Status)
 	assert.Empty(t, result.UsageFacts)
+	response.Header.Set("X-Api-Status-Code", "20000003")
+	result, err = adaptor.ParseTaskResult(task, response, []byte(`{"audio_info":{"duration":3018},"result":{"text":""}}`))
+	require.NoError(t, err)
+	assert.Equal(t, model.TaskStatusFailure, result.Status)
+	assert.Empty(t, result.UsageFacts)
 }
 
 func TestTaskAdaptorBuildsMultipartFromOpaqueFileReference(t *testing.T) {

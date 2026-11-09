@@ -9,7 +9,7 @@ Cube 服务端调用 `https://packapi.top`。提交、查询和模型列表都�
 | 语音、音效与配乐生成 | `seed-audio-1.0` | `POST /doubao/api/v3/tts/create` | JSON，含下载 URL 和生成时长 |
 | 文本转语音 | `seed-tts-2.0` | `POST /doubao/api/v3/tts/unidirectional` | JSON，含按顺序排列的 MP3 分片 |
 | 提交录音转写 | `volc.seedasr.auc` | `POST /doubao/api/v3/auc/bigmodel/submit` | JSON，含 PackAPI 任务 ID |
-| 查询录音转写 | `volc.seedasr.auc` | `GET /doubao/api/v3/auc/bigmodel/tasks/{id}` | JSON，含状态和已完成的转写文本 |
+| 查询录音转写 | `volc.seedasr.auc` | `GET /doubao/api/v3/auc/bigmodel/tasks/{id}` | JSON，含状态、转写文本和分句时间戳 |
 
 以下示例在服务端环境中读取 `PACKAPI_API_KEY`。
 
@@ -73,15 +73,18 @@ PY
 
 ## 转写本地录音
 
-Cube 服务端从已授权的会话路径打开录音，直接上传到阿里云私有 OSS。上传完成后，为该对象生成一个豆包可以从公网访问的 HTTPS GET 签名 URL，建议有效期 6 小时。PackAPI 接收 `audio_url` 和 `format`，把链接转交给豆包，录音文件由豆包从 OSS 下载。任务到达终态后由 Cube 清理临时对象，并可用 OSS 生命周期规则清理遗留对象。使用新开通的中国内地 OSS 时，先确认用于签名的外网域名可被豆包访问。 [阿里云上传文件](https://www.alibabacloud.com/help/zh/oss/developer-reference/upload-files-using-oss-sdk-for-python-v2/) · [OSS 签名下载](https://www.alibabacloud.com/help/zh/oss/developer-reference/python-download-using-a-presigned-url)
+Cube 服务端从已授权的会话路径打开录音，用 OSS SDK 直接上传到阿里云私有 Bucket。SDK 可分片读取和上传大文件。上传完成后，为该对象生成豆包可以从公网访问的 HTTPS GET 签名 URL，建议有效期 6 小时，使用临时凭据时也要检查凭据的到期时间。PackAPI 仅接收包含链接的 JSON，豆包从 OSS 下载录音。任务到达终态后由 Cube 清理临时对象，并用 OSS 生命周期规则清理遗留对象和未完成的分片。适用阿里云公网域名限制的中国内地 Bucket 要用绑定了 TLS 证书的自定义域名签名。 [OSS 分片上传](https://www.alibabacloud.com/help/zh/oss/developer-reference/large-file-upload-manager-using-oss-sdk-for-python-v2) · [OSS 签名下载](https://www.alibabacloud.com/help/zh/oss/developer-reference/python-download-using-a-presigned-url) · [OSS 外网域名规则](https://www.alibabacloud.com/help/zh/oss/user-guide/regions-and-endpoints)
 
-`format` 支持 `mp3`、`wav`、`ogg`、`m4a` 和 `aac`。可选 `language` 使用 `zh-CN`、`en-US` 等语种代码。Cube 上传前按豆包标准版限制校验，文件小于 512 MB，时长小于 5 小时。提交到 PackAPI 的 JSON 只需包含 URL、模型和格式等字段。 [豆包标准版限制](https://docs.volcengine.com/docs/doubao-voice/access-must-read-1?lang=zh) · [豆包提交接口](https://docs.volcengine.com/docs/doubao-voice/task-submission-http-1?lang=zh)
+`format` 支持 `mp3`、`wav`、`ogg`、`m4a` 和 `aac`。可选 `language` 使用 `zh-CN`、`en-US` 等语种代码。Cube 上传前按豆包标准版限制校验，文件小于 512 MB，时长小于 5 小时。`audio_url` 最长 4,096 字符，签名查询参数原样提交。 [豆包标准版限制](https://docs.volcengine.com/docs/doubao-voice/access-must-read-1?lang=zh) · [豆包提交接口](https://docs.volcengine.com/docs/doubao-voice/task-submission-http-1?lang=zh)
 
 ```bash
+# ASR_AUDIO_URL 由 Cube 上传文件后生成，以下示例为手机录音 M4A。
+jq -n --arg url "$ASR_AUDIO_URL" \
+  '{model:"volc.seedasr.auc",audio_url:$url,format:"m4a",language:"zh-CN"}' |
 curl --fail-with-body --silent --show-error \
   -H "Authorization: Bearer ${PACKAPI_API_KEY}" \
   -H 'Content-Type: application/json' \
-  --data-binary '{"model":"volc.seedasr.auc","audio_url":"https://media.example.com/recording.mp3","format":"mp3","language":"zh-CN"}' \
+  --data-binary @- \
   "${PACKAPI_BASE_URL}/doubao/api/v3/auc/bigmodel/submit" > transcription.json
 
 TASK_ID=$(jq -er '.id' transcription.json)
@@ -90,7 +93,7 @@ curl --fail-with-body --silent --show-error \
   "${PACKAPI_BASE_URL}/doubao/api/v3/auc/bigmodel/tasks/${TASK_ID}"
 ```
 
-保存返回的 `id`，每 5–15 秒查询一次。`queued` 和 `in_progress` 继续轮询，`completed` 时读取 `text`、`duration_seconds` 和 `utterances`。每个分句的 `start_ms`、`end_ms` 都以录音开头为基准。历史任务或无可用分句时 `utterances` 为空数组。`failed` 时结束并记录 `error`。查询动作本身无生成费。提交超时且未拿到 ID 时，先查任务或使用日志再决定是否重试，避免重复产生费用。 [豆包结果查询](https://docs.volcengine.com/docs/doubao-voice/result-query-http-1?lang=zh)
+保存返回的 `id`，每 5–15 秒查询一次。`queued` 和 `in_progress` 继续轮询，`completed` 时读取 `text`、`duration_seconds` 和 `utterances`。每个分句的 `start_ms`、`end_ms` 都以录音开头为基准。历史任务或无可用分句时 `utterances` 为空数组。`failed` 时结束并记录 `error`。豆包报告未检测到人声时，任务进入 `failed` 并退回预扣额度。查询动作本身无生成费。提交超时且未拿到 ID 时，先查任务或使用日志再决定是否重试，避免重复产生费用。 [豆包结果查询](https://docs.volcengine.com/docs/doubao-voice/result-query-http-1?lang=zh)
 
 ```json
 {

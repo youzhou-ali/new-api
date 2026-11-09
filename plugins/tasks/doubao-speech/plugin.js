@@ -12,7 +12,7 @@ export const meta = {
     en: "Synthesize speech and transcribe recordings with Doubao Speech 2.0",
     zh: "使用豆包语音 2.0 合成语音和转写录音文件",
   },
-  version: "1.1.0",
+  version: "1.1.1",
   author: { name: "PackAPI" },
   icon: "Doubao.Color",
   baseUrl: "https://openspeech.bytedance.com",
@@ -172,7 +172,8 @@ export function parseTaskResult(_ctx, body, resp) {
   if (code === "20000000" && body && body.result && typeof body.result.text === "string" && validDuration(body)) {
     return { status: "SUCCESS", progress: "100%" };
   }
-  if (code.startsWith("45") || code === "20000000") {
+  // Doubao returns 20000003 for a recording with no detected speech.
+  if (code.startsWith("45") || code === "20000000" || code === "20000003") {
     return { status: "FAILURE", progress: "100%", reason: "Doubao transcription failed or returned invalid usage" };
   }
   return { status: "UNKNOWN" };
