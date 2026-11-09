@@ -12,7 +12,7 @@ export const meta = {
     en: "Synthesize speech and transcribe recordings with Doubao Speech 2.0",
     zh: "使用豆包语音 2.0 合成语音和转写录音文件",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "PackAPI" },
   icon: "Doubao.Color",
   baseUrl: "https://openspeech.bytedance.com",
@@ -63,7 +63,7 @@ export const native = {
     if (typeof body.audio_url !== "string" || body.audio_url.length > 4096 || !/^https:\/\/[^\s]+$/i.test(body.audio_url)) {
       throw new Error("audio_url must be an HTTPS file URL");
     }
-    if (!["mp3", "wav", "ogg"].includes(body.format)) throw new Error("format must be mp3, wav, or ogg");
+    if (!["mp3", "wav", "ogg", "m4a", "aac"].includes(body.format)) throw new Error("format must be mp3, wav, ogg, m4a, or aac");
     const audio = { url: body.audio_url, format: body.format };
     if (body.language !== undefined) {
       if (typeof body.language !== "string" || !/^[a-z]{2,3}-[A-Z]{2}$/.test(body.language)) throw new Error("language must be a language-region code");
@@ -75,8 +75,17 @@ export const native = {
     const status = { SUCCESS: "completed", FAILURE: "failed", IN_PROGRESS: "in_progress" }[task.status] || "queued";
     const out = { id: task.task_id, model: ASR, status };
     if (status === "completed") {
-      out.text = task.data.result.text;
+      const result = task.data.result;
+      out.text = result.text;
       out.duration_seconds = task.data.audio_info.duration / 1000;
+      out.utterances = [];
+      if (Array.isArray(result.utterances)) {
+        for (const part of result.utterances) {
+          if (!part || typeof part.text !== "string" || !Number.isInteger(part.start_time) || !Number.isInteger(part.end_time)
+              || part.start_time < 0 || part.end_time <= part.start_time) continue;
+          out.utterances.push({ start_ms: part.start_time, end_ms: part.end_time, text: part.text });
+        }
+      }
     } else if (status === "failed") {
       out.error = task.fail_reason || "Transcription failed";
     }
@@ -103,7 +112,7 @@ export function buildSubmitRequest(ctx) {
     url: ctx.baseUrl + "/api/v3/auc/bigmodel/submit",
     method: "POST",
     headers: { ...headers(ctx, ASR, req.requestId), "X-Api-Sequence": "-1" },
-    body: { audio: req.audio, request: { model_name: "bigmodel", enable_itn: true, enable_punc: true } },
+    body: { audio: req.audio, request: { model_name: "bigmodel", enable_itn: true, enable_punc: true, show_utterances: true } },
   };
 }
 

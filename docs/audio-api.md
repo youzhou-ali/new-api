@@ -33,9 +33,13 @@ curl --fail --silent --show-error "$(jq -er '.url' generated.json)" --output gen
 
 使用参考音频时，传 `references: [{"audio_url":"https://media.example.com/reference.mp3"}]`，并在提示词中用 `@音频1` 引用第一条素材。使用参考图片时，传 `references: [{"image_url":"https://media.example.com/scene.png"}]`。本地文件也可读为原始 Base64 文本，分别放入 `audio_data` 或 `image_data`，省略 data URL 前缀。图片参考与音频参考分开提交。参考音频最多三条，每条最多 30 秒和 10 MB。参考图片最多一张，最大 10 MB。 [参考素材规则](https://docs.volcengine.com/docs/doubao-voice/audio-generation-http?lang=zh)
 
+`text_prompt` 可写目标时长，模型单次最多生成 120 秒。混音时按视频时长裁切、循环或补静音。计费以 `original_duration` 为准。Base64 会把素材体积放大约三分之一，三条 10 MB 参考音频约占 40 MB JSON。PackAPI 生产 Nginx 的整包上限为 64 MiB，大请求还受公网入口限制。 [豆包生成接口](https://docs.volcengine.com/docs/doubao-voice/audio-generation-http?lang=zh) · [Cloudflare 请求体限制](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/)
+
+生产日志里一条成功请求的服务端耗时为 11.2 秒。Cube 可设置连接超时 10 秒、读取超时 135 秒，实际等待还受公网代理的超时限制。当前接口是同步提交，结果只在该次响应中返回。请求中断或超时仍可能产生费用，收到超时或 `524` 后暂停自动重试。`X-Usage-Ref` 用于查账，生成接口暂无幂等键。 [Cloudflare 超时说明](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/)
+
 ## 用指定音色朗读文本
 
-`input` 为待朗读文本，最多 1,000 字符。`voice` 默认 `zh_female_vv_uranus_bigtts`，可使用豆包 TTS 2.0 音色 ID。`speech_rate` 为可选整数，范围 −50 至 100，默认 0。PackAPI 等上游合成结束后一次返回 JSON，包含 `audio_chunks`、`mime_type`、`sample_rate`、`characters`。将每个分片单独解码为二进制，再按顺序拼接保存为 MP3。 [音色列表](https://docs.volcengine.com/docs/doubao-voice/tone-list-3?lang=zh) · [豆包 TTS 接口](https://docs.volcengine.com/docs/doubao-voice/unidirectional-streaming-text-to-speech-http?lang=zh)
+`input` 为待朗读文本，最多 1,000 字符。`voice` 默认 `zh_female_vv_uranus_bigtts`，可使用豆包 TTS 2.0 音色 ID。`speech_rate` 为可选整数，范围 −50 至 100，默认 0。PackAPI 等上游合成结束后一次返回 JSON，包含 `audio_chunks`、`mime_type`、`sample_rate`、`characters`。当前输出为 24 kHz MP3，将每个分片单独解码为二进制，再按顺序拼接。`characters` 是豆包实际计费字符数，直接来自完成帧的 `usage.text_words`。 [音色列表](https://docs.volcengine.com/docs/doubao-voice/tone-list-3?lang=zh) · [豆包 TTS 接口](https://docs.volcengine.com/docs/doubao-voice/unidirectional-streaming-text-to-speech-http?lang=zh)
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -54,9 +58,24 @@ Path("speech.mp3").write_bytes(b"".join(base64.b64decode(c) for c in speech["aud
 PY
 ```
 
+以下音色均用当前豆包语音 Key 直连合成验证。风格按官方音色库的场景整理。 [豆包官方音色库](https://docs.volcengine.com/docs/doubao-voice/tone-list-3?lang=zh)
+
+| `voice` | 名称 | 性别 | 场景 |
+| --- | --- | --- | --- |
+| `zh_female_vv_uranus_bigtts` | Vivi 2.0 | 女 | 通用对话 |
+| `zh_female_xiaohe_uranus_bigtts` | 小何 2.0 | 女 | 对话、朗读 |
+| `zh_male_m191_uranus_bigtts` | 云舟 2.0 | 男 | 通用对话 |
+| `zh_male_taocheng_uranus_bigtts` | 小天 2.0 | 男 | 通用对话 |
+| `zh_male_dayi_uranus_bigtts` | 大壹 2.0 | 男 | 视频旁白 |
+| `zh_male_guanggaojieshuo_uranus_bigtts` | 广告解说 2.0 | 男 | 广告口播 |
+| `zh_female_shaoergushi_uranus_bigtts` | 少儿故事 2.0 | 女 | 儿童故事朗读 |
+| `ICL_uranus_en_female_charlie_tob` | Charlie 2.0 | 女 | 美式英语 |
+
 ## 转写本地录音
 
-先把文件上传到 Cube 对象存储，再生成豆包服务可下载的 HTTPS URL。提交 `audio_url` 和 `format`（`mp3`、`wav` 或 `ogg`）。可选 `language` 使用 `zh-CN`、`en-US` 等语种代码。上游接受最长 5 小时且不超过 512 MB 的录音，签名 URL 要覆盖排队和转写。 [豆包录音文件识别](https://docs.volcengine.com/docs/doubao-voice/task-submission-http-1?lang=zh)
+Cube 服务端从已授权的会话路径打开录音，直接上传到阿里云私有 OSS。上传完成后，为该对象生成一个豆包可以从公网访问的 HTTPS GET 签名 URL，建议有效期 6 小时。PackAPI 接收 `audio_url` 和 `format`，把链接转交给豆包，录音文件由豆包从 OSS 下载。任务到达终态后由 Cube 清理临时对象，并可用 OSS 生命周期规则清理遗留对象。使用新开通的中国内地 OSS 时，先确认用于签名的外网域名可被豆包访问。 [阿里云上传文件](https://www.alibabacloud.com/help/zh/oss/developer-reference/upload-files-using-oss-sdk-for-python-v2/) · [OSS 签名下载](https://www.alibabacloud.com/help/zh/oss/developer-reference/python-download-using-a-presigned-url)
+
+`format` 支持 `mp3`、`wav`、`ogg`、`m4a` 和 `aac`。可选 `language` 使用 `zh-CN`、`en-US` 等语种代码。Cube 上传前按豆包标准版限制校验，文件小于 512 MB，时长小于 5 小时。提交到 PackAPI 的 JSON 只需包含 URL、模型和格式等字段。 [豆包标准版限制](https://docs.volcengine.com/docs/doubao-voice/access-must-read-1?lang=zh) · [豆包提交接口](https://docs.volcengine.com/docs/doubao-voice/task-submission-http-1?lang=zh)
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -71,7 +90,21 @@ curl --fail-with-body --silent --show-error \
   "${PACKAPI_BASE_URL}/doubao/api/v3/auc/bigmodel/tasks/${TASK_ID}"
 ```
 
-保存返回的 `id`，每 5–15 秒查询一次。`queued` 和 `in_progress` 继续轮询，`completed` 时读取 `text` 和 `duration_seconds`，`failed` 时结束并记录 `error`。查询使用 PackAPI 任务 ID，查询动作本身无生成费。提交超时且未拿到 ID 时，先查任务或使用日志再决定是否重试，避免重复产生费用。
+保存返回的 `id`，每 5–15 秒查询一次。`queued` 和 `in_progress` 继续轮询，`completed` 时读取 `text`、`duration_seconds` 和 `utterances`。每个分句的 `start_ms`、`end_ms` 都以录音开头为基准。历史任务或无可用分句时 `utterances` 为空数组。`failed` 时结束并记录 `error`。查询动作本身无生成费。提交超时且未拿到 ID 时，先查任务或使用日志再决定是否重试，避免重复产生费用。 [豆包结果查询](https://docs.volcengine.com/docs/doubao-voice/result-query-http-1?lang=zh)
+
+```json
+{
+  "id": "task_example",
+  "model": "volc.seedasr.auc",
+  "status": "completed",
+  "text": "你好。录音测试完成。",
+  "duration_seconds": 2.4,
+  "utterances": [
+    {"start_ms": 180, "end_ms": 710, "text": "你好。"},
+    {"start_ms": 980, "end_ms": 2150, "text": "录音测试完成。"}
+  ]
+}
+```
 
 ## 计费和错误
 
