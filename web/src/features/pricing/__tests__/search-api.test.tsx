@@ -98,3 +98,39 @@ test('search cards retain request pricing and details without token throughput m
   expect(screen.queryByTitle('Throughput')).not.toBeInTheDocument()
   expect(screen.getByText('/ request')).toBeVisible()
 })
+
+test('web fetch details show the URL parameter and copy HTTP samples for the fetch endpoint', async () => {
+  const user = userEvent.setup()
+  render(
+    <QueryClientProvider client={client}>
+      <ModelDetailsContent
+        model={{
+          ...model,
+          model_name: 'web-fetch',
+          supported_endpoint_types: ['web-fetch'],
+          billing_expr: 'tier("request", fixed(0))',
+        }}
+        groupRatio={{ default: 1 }}
+        usableGroup={{ default: { desc: 'Default', ratio: 1 } }}
+        endpointMap={{ 'web-fetch': { path: '/v1/fetch', method: 'POST' } }}
+        autoGroups={[]}
+        priceRate={1}
+        usdExchangeRate={1}
+        tokenUnit='M'
+      />
+    </QueryClientProvider>
+  )
+  await user.click(screen.getByRole('tab', { name: 'API' }))
+  expect(screen.getByText('url')).toBeVisible()
+  expect(screen.queryByText('temperature')).not.toBeInTheDocument()
+  expect(screen.queryByText('Rate limits')).not.toBeInTheDocument()
+  for (const language of ['cURL', 'Python', 'TypeScript', 'JavaScript']) {
+    await user.click(screen.getByRole('tab', { name: language }))
+    await user.click(screen.getByRole('button', { name: /Copy code|Copied!/ }))
+    const sample = await navigator.clipboard.readText()
+    expect(sample).toContain('https://relay.example/v1/fetch')
+    expect(sample).toContain('"model": "web-fetch"')
+    expect(sample).toContain('"url": "https://example.com"')
+    expect(sample).not.toContain('messages')
+  }
+})

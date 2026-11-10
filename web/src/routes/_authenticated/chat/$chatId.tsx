@@ -22,7 +22,7 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { useActiveChatKey } from '@/features/chat/hooks/use-active-chat-key'
 import { useChatPresets } from '@/features/chat/hooks/use-chat-presets'
 import {
@@ -66,11 +66,19 @@ function ChatRouteComponent() {
   const iframeSrc = useMemo(() => {
     if (!preset || !isWebLink) return ''
     if (requiresActiveKey && !activeKey) return ''
-    return resolveChatUrl({
+    const resolved = resolveChatUrl({
       template: preset.url,
       apiKey: requiresActiveKey ? activeKey : undefined,
       serverAddress,
     })
+    try {
+      const url = new URL(resolved)
+      return url.protocol === 'http:' || url.protocol === 'https:'
+        ? resolved
+        : ''
+    } catch {
+      return ''
+    }
   }, [activeKey, isWebLink, preset, requiresActiveKey, serverAddress])
 
   if (!preset) {
@@ -154,12 +162,25 @@ function ChatRouteComponent() {
   }
 
   return (
-    <iframe
-      src={iframeSrc}
-      key={iframeSrc}
-      className='h-full w-full border-0'
-      allow='camera; microphone'
-      title={`Chat preset: ${preset.name}`}
-    />
+    <div className='flex h-full flex-col'>
+      <div className='flex shrink-0 justify-end px-3 py-2'>
+        <a
+          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          href={iframeSrc}
+          target='_blank'
+          rel='noopener noreferrer'
+        >
+          {t('Open in new tab')}
+        </a>
+      </div>
+      <iframe
+        src={iframeSrc}
+        key={iframeSrc}
+        className='min-h-0 w-full flex-1 border-0'
+        allow='camera; microphone'
+        sandbox='allow-scripts allow-forms'
+        title={`Chat preset: ${preset.name}`}
+      />
+    </div>
   )
 }

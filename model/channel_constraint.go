@@ -97,7 +97,10 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 			return constant.SearchChannelType(modelName) != constant.ChannelTypeUnknown &&
 				constant.SearchChannelType(modelName) == ch.Type && ch.ValidateSearchConfiguration() == nil
 		}
-		if constant.IsSearchChannel(ch.Type) {
+		if filter.RequestPath == "/v1/fetch" {
+			return modelName == constant.WebFetchModel && ch.Type == constant.ChannelTypeWebFetch && ch.ValidateSearchConfiguration() == nil
+		}
+		if constant.IsToolChannel(ch.Type) {
 			return false
 		}
 		if filter.RequestPath == "" {
@@ -151,14 +154,15 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 	}
 }
 
-// ValidateSearchConfiguration keeps a search product's source and cost tier
-// stable across channel selection, pinning, retries, and administrator edits.
+// ValidateSearchConfiguration keeps search and Web Fetch channels bound to
+// their declared models across selection and administrator edits.
 func (ch *Channel) ValidateSearchConfiguration() error {
-	if !constant.IsSearchChannel(ch.Type) {
+	if !constant.IsToolChannel(ch.Type) {
 		return nil
 	}
+	supportedModels := constant.ToolChannelModels(ch.Type)
 	for _, name := range ch.GetModels() {
-		if constant.SearchChannelType(name) != ch.Type {
+		if !slices.Contains(supportedModels, name) {
 			return common.NewMessage("Search channel models must belong to its search provider")
 		}
 	}
@@ -180,8 +184,12 @@ func (ch *Channel) ValidateSearchConfiguration() error {
 			return common.NewMessage("Search channels do not support parameter overrides or body passthrough")
 		}
 	}
-	if len(overrides) != 0 || ch.GetSetting().PassThroughBodyEnabled {
+	settings := ch.GetSetting()
+	if len(overrides) != 0 || settings.PassThroughBodyEnabled {
 		return common.NewMessage("Search channels do not support parameter overrides or body passthrough")
+	}
+	if ch.Type == constant.ChannelTypeWebFetch && strings.TrimSpace(settings.Proxy) != "" {
+		return common.NewMessage("Web fetch channels do not support a proxy")
 	}
 	return nil
 }
@@ -189,7 +197,7 @@ func (ch *Channel) ValidateSearchConfiguration() error {
 // ValidateSearchUpdate checks the resulting configuration using the nonzero
 // field and non-nil pointer semantics of Channel.Update.
 func (ch *Channel) ValidateSearchUpdate(update *Channel) error {
-	if !constant.IsSearchChannel(ch.Type) && !constant.IsSearchChannel(update.Type) {
+	if !constant.IsToolChannel(ch.Type) && !constant.IsToolChannel(update.Type) {
 		return nil
 	}
 	merged := *ch

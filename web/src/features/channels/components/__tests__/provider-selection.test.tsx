@@ -871,8 +871,9 @@ test.each([
   ['Brave Search', 65],
   ['Bocha Search', 66],
   ['Baidu Search', 67],
+  ['Web Fetch', 68],
 ])(
-  'the built-in provider picker selects %s as a search channel',
+  'the built-in provider picker selects %s as a tool channel',
   async (name, type) => {
     const user = userEvent.setup()
     const select = vi.fn()

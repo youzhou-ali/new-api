@@ -423,13 +423,13 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
   ].join('\n')
 }
 
-function buildSearchSample(lang: Lang, ctx: SampleContext): string {
+function buildToolSample(
+  lang: Lang,
+  ctx: SampleContext,
+  body: Record<string, string | number>,
+  resultField: 'results' | 'body'
+): string {
   const url = `${ctx.baseUrl}${ctx.endpointPath}`
-  const body = {
-    model: ctx.modelName,
-    query: 'Latest developments in renewable energy',
-    max_results: 5,
-  }
   const bodyJson = JSON.stringify(body, null, 2)
 
   if (lang === 'curl') {
@@ -455,7 +455,7 @@ function buildSearchSample(lang: Lang, ctx: SampleContext): string {
       '    },',
       ')',
       'with urlopen(request) as response:',
-      '    print(json.load(response)["results"])',
+      `    print(json.load(response)["${resultField}"])`,
     ].join('\n')
   }
   return [
@@ -470,7 +470,7 @@ function buildSearchSample(lang: Lang, ctx: SampleContext): string {
     `if (!response.ok) throw new Error(await response.text())`,
     '',
     `const data = await response.json()`,
-    `console.log(data.results)`,
+    `console.log(data.${resultField})`,
   ].join('\n')
 }
 
@@ -479,7 +479,26 @@ function buildSample(
   endpointType: string,
   ctx: SampleContext
 ): string {
-  if (endpointType === 'search') return buildSearchSample(lang, ctx)
+  if (endpointType === 'search') {
+    return buildToolSample(
+      lang,
+      ctx,
+      {
+        model: ctx.modelName,
+        query: 'Latest developments in renewable energy',
+        max_results: 5,
+      },
+      'results'
+    )
+  }
+  if (endpointType === 'web-fetch') {
+    return buildToolSample(
+      lang,
+      ctx,
+      { model: ctx.modelName, url: 'https://example.com' },
+      'body'
+    )
+  }
   if (endpointType === 'anthropic') return buildAnthropicSample(lang, ctx)
   if (endpointType === 'gemini') return buildGeminiSample(lang, ctx)
   if (endpointType === 'embeddings' || endpointType === 'jina-rerank') {

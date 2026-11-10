@@ -146,6 +146,7 @@ import {
   CHANNEL_TYPE_TASK_PLUGIN,
   CHANNEL_TYPE_VLLM,
   CHANNEL_TYPE_SGLANG,
+  CHANNEL_TYPE_WEB_FETCH,
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
   FIELD_PASSTHROUGH_TYPES,
@@ -585,6 +586,7 @@ export function ChannelMutateDrawer({
   const currentGroups = formValues.group
   const currentType = formValues.type
   const isSearchChannel = SEARCH_CHANNEL_TYPES.has(currentType)
+  const isWebFetchChannel = currentType === CHANNEL_TYPE_WEB_FETCH
   const baseUrlPlaceholder = [CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG].includes(
     currentType
   )
@@ -852,6 +854,35 @@ export function ChannelMutateDrawer({
           return
         }
         form.setValue('type', target.type, { shouldDirty: true })
+        if (target.type === CHANNEL_TYPE_WEB_FETCH) {
+          const models = getChannelTypeConfig(target.type).supportedModels ?? []
+          form.setValue('models', formatModelsArray(models), {
+            shouldDirty: true,
+            shouldValidate: true,
+          })
+          form.setValue('base_url', '', { shouldDirty: true })
+          form.setValue('test_model', '', { shouldDirty: true })
+          form.setValue('model_mapping', '', { shouldDirty: true })
+          form.setValue('param_override', '', { shouldDirty: true })
+          form.setValue('header_override', '', { shouldDirty: true })
+          form.setValue('proxy', '', { shouldDirty: true })
+          form.setValue(
+            'http_protocol',
+            CHANNEL_FORM_DEFAULT_VALUES.http_protocol,
+            { shouldDirty: true }
+          )
+          form.setValue(
+            'http2_connection_shards',
+            CHANNEL_FORM_DEFAULT_VALUES.http2_connection_shards,
+            { shouldDirty: true }
+          )
+          form.setValue('tls_insecure_skip_verify', false, {
+            shouldDirty: true,
+          })
+          form.setValue('pass_through_body_enabled', false, {
+            shouldDirty: true,
+          })
+        }
         if (!isEditing && !providerTarget && !form.getValues('name').trim()) {
           const label = CHANNEL_TYPE_OPTIONS.find(
             (option) => option.value === target.type
@@ -2797,92 +2828,96 @@ export function ChannelMutateDrawer({
           />
         )}
 
-        <FormField
-          control={form.control}
-          name='header_override'
-          render={({ field }) => (
-            <FormItem className='space-y-3 border-t pt-4'>
-              <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
-                <div className='space-y-1'>
-                  <FormLabel>{t('Request Header Override')}</FormLabel>
-                  <FormDescription>
-                    {t('Override request headers')}
-                  </FormDescription>
-                </div>
-                <div className='flex flex-wrap gap-2'>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={() =>
-                      field.onChange(
-                        JSON.stringify(
-                          {
-                            '*': true,
-                            're:^X-Trace-.*$': true,
-                            'X-Foo': '{client_header:X-Foo}',
-                            Authorization: 'Bearer {api_key}',
-                          },
-                          null,
-                          2
+        {!isWebFetchChannel && (
+          <FormField
+            control={form.control}
+            name='header_override'
+            render={({ field }) => (
+              <FormItem className='space-y-3 border-t pt-4'>
+                <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                  <div className='space-y-1'>
+                    <FormLabel>{t('Request Header Override')}</FormLabel>
+                    <FormDescription>
+                      {t('Override request headers')}
+                    </FormDescription>
+                  </div>
+                  <div className='flex flex-wrap gap-2'>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() =>
+                        field.onChange(
+                          JSON.stringify(
+                            {
+                              '*': true,
+                              're:^X-Trace-.*$': true,
+                              'X-Foo': '{client_header:X-Foo}',
+                              Authorization: 'Bearer {api_key}',
+                            },
+                            null,
+                            2
+                          )
                         )
-                      )
-                    }
-                  >
-                    {t('Fill Template')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={() => {
-                      void confirmEnablePassthrough('headers').then(
-                        (confirmed) => {
-                          if (!confirmed) return
-                          field.onChange(JSON.stringify({ '*': true }, null, 2))
-                        }
-                      )
-                    }}
-                  >
-                    {t('Passthrough Template')}
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    onClick={() => field.onChange('')}
-                  >
-                    {t('Clear')}
-                  </Button>
+                      }
+                    >
+                      {t('Fill Template')}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => {
+                        void confirmEnablePassthrough('headers').then(
+                          (confirmed) => {
+                            if (!confirmed) return
+                            field.onChange(
+                              JSON.stringify({ '*': true }, null, 2)
+                            )
+                          }
+                        )
+                      }}
+                    >
+                      {t('Passthrough Template')}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      onClick={() => field.onChange('')}
+                    >
+                      {t('Clear')}
+                    </Button>
+                  </div>
                 </div>
-              </div>
-              <FormControl>
-                <JsonCodeEditor
-                  value={field.value || ''}
-                  onChange={field.onChange}
-                  name={field.name}
-                  onBlur={field.onBlur}
-                  textareaRef={field.ref}
-                  disabled={sensitiveLocked || isSubmitting}
-                  placeholder={t('Enter JSON to override request headers')}
-                  heightClassName='h-40 min-h-40 max-h-40'
-                />
-              </FormControl>
-              <FormDescription className='text-xs'>
-                {t('Supported variables')}:{' '}
-                <code className='bg-muted rounded px-1 py-0.5'>
-                  {'{api_key}'}
-                </code>{' '}
-                — {t('Channel key')},{' '}
-                <code className='bg-muted rounded px-1 py-0.5'>
-                  {'{client_header:NAME}'}
-                </code>{' '}
-                — {t('Client header value')}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+                <FormControl>
+                  <JsonCodeEditor
+                    value={field.value || ''}
+                    onChange={field.onChange}
+                    name={field.name}
+                    onBlur={field.onBlur}
+                    textareaRef={field.ref}
+                    disabled={sensitiveLocked || isSubmitting}
+                    placeholder={t('Enter JSON to override request headers')}
+                    heightClassName='h-40 min-h-40 max-h-40'
+                  />
+                </FormControl>
+                <FormDescription className='text-xs'>
+                  {t('Supported variables')}:{' '}
+                  <code className='bg-muted rounded px-1 py-0.5'>
+                    {'{api_key}'}
+                  </code>{' '}
+                  — {t('Channel key')},{' '}
+                  <code className='bg-muted rounded px-1 py-0.5'>
+                    {'{client_header:NAME}'}
+                  </code>{' '}
+                  — {t('Client header value')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
       </fieldset>
     </div>
   )
@@ -4767,7 +4802,7 @@ export function ChannelMutateDrawer({
                 {formatFields}
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
-                {passthroughFields}
+                {!isWebFetchChannel && passthroughFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}
               </fieldset>
@@ -4795,10 +4830,14 @@ export function ChannelMutateDrawer({
                 className='space-y-4 disabled:opacity-60'
               >
                 {taskPollingFields}
-                {proxyFields}
-                {httpProtocolFields}
-                {httpShardsFields}
-                {tlsInsecureSkipVerifyFields}
+                {!isWebFetchChannel && (
+                  <>
+                    {proxyFields}
+                    {httpProtocolFields}
+                    {httpShardsFields}
+                    {tlsInsecureSkipVerifyFields}
+                  </>
+                )}
               </fieldset>
             </div>
             {upstreamModelDetectionFields}

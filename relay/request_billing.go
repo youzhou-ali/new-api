@@ -62,8 +62,17 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 	}
-	if info.RelayFormat == types.RelayFormatSearch && (info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.EstimatedBillingUnit != billingexpr.BillingUnitRequest) {
-		return types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgSearchFixedPriceRequired)), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	if info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.EstimatedBillingUnit != billingexpr.BillingUnitRequest {
+		var messageKey string
+		switch info.RelayFormat {
+		case types.RelayFormatSearch:
+			messageKey = i18n.MsgSearchFixedPriceRequired
+		case types.RelayFormatWebFetch:
+			messageKey = i18n.MsgWebFetchFixedPriceRequired
+		}
+		if messageKey != "" {
+			return types.NewErrorWithStatusCode(errors.New(i18n.T(c, messageKey)), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
 	}
 	if priceData.FreeModel {
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))
@@ -82,7 +91,7 @@ func RefundFailedRequestBilling(c *gin.Context, info *relaycommon.RelayInfo, api
 	if info.Billing != nil {
 		info.Billing.Refund(c)
 	}
-	if info.RelayFormat == types.RelayFormatSearch {
+	if info.RelayFormat == types.RelayFormatSearch || info.RelayFormat == types.RelayFormatWebFetch {
 		return apiErr
 	}
 	service.ChargeViolationFeeIfNeeded(c, info, apiErr)

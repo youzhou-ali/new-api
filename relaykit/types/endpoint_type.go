@@ -13,6 +13,7 @@ const (
 	EndpointTypeDeepSeekToolsSearch   EndpointType = "deepseek-tools-search"
 	EndpointTypeDeepSeekToolsFetch    EndpointType = "deepseek-tools-fetch"
 	EndpointTypeSearch                EndpointType = "search"
+	EndpointTypeWebFetch              EndpointType = "web-fetch"
 	EndpointTypeAnthropic             EndpointType = "anthropic"
 	EndpointTypeGemini                EndpointType = "gemini"
 	EndpointTypeJinaRerank            EndpointType = "jina-rerank"

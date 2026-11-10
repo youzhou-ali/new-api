@@ -63,6 +63,24 @@ const (
 	MsgSearchUpstreamFailed       = "search.upstream_failed"
 	MsgSearchInvalidResponse      = "search.invalid_response"
 	MsgSearchFixedPriceRequired   = "search.fixed_price_required"
+
+	MsgWebFetchInvalidURL          = "web_fetch.invalid_url"
+	MsgWebFetchBlockedAddress      = "web_fetch.blocked_address"
+	MsgWebFetchDNSFailed           = "web_fetch.dns_failed"
+	MsgWebFetchConnectFailed       = "web_fetch.connect_failed"
+	MsgWebFetchTooManyRedirects    = "web_fetch.too_many_redirects"
+	MsgWebFetchTooLarge            = "web_fetch.too_large"
+	MsgWebFetchUnsupportedEncoding = "web_fetch.unsupported_encoding"
+	MsgWebFetchTimeout             = "web_fetch.timeout"
+	MsgWebFetchJSONRequired        = "web_fetch.json_required"
+	MsgWebFetchUnsupportedField    = "web_fetch.unsupported_field"
+	MsgWebFetchInvalidModel        = "web_fetch.invalid_model"
+	MsgWebFetchURLRequired         = "web_fetch.url_required"
+	MsgWebFetchInvalidChannel      = "web_fetch.invalid_channel"
+	MsgWebFetchChannelOverrides    = "web_fetch.channel_overrides"
+	MsgWebFetchFixedPriceRequired  = "web_fetch.fixed_price_required"
+	MsgWebFetchRateLimited         = "web_fetch.rate_limited"
+	MsgWebFetchBusy                = "web_fetch.busy"
 )
 
 // Emails and the name of the token created at registration, in the

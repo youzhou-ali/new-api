@@ -1898,6 +1898,118 @@
         ]
       }
     },
+    "/v1/fetch": {
+      "post": {
+        "summary": "网页抓取",
+        "deprecated": false,
+        "description": "通过网关以 GET 抓取公开网页。请求只允许 HTTP(S) 和 80 或 443 端口，最多跟随 5 次重定向，整次抓取限时 30 秒，解压后正文最多 10 MiB。任何目标 HTTP 状态码均在成功响应中原样返回。成功请求按配置的固定按次价格计费，默认免费。",
+        "operationId": "createWebFetch",
+        "tags": [
+          "网页抓取"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebFetchRequest"
+              },
+              "example": {
+                "model": "web-fetch",
+                "url": "https://example.com/"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "目标网站已响应，status 为目标状态码",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebFetchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求、网址、目标地址或价格配置无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Key 无效、失效或不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权使用 web-fetch 或额度不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "抓取请求超过单 Key 或全局限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "目标域名解析、连接或响应读取失败，重定向过多，正文过大或内容编码不受支持",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "没有可用的 Web Fetch 渠道",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "目标网站未在 30 秒内完成响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/v1/rerank": {
       "post": {
         "summary": "文档重排序",
@@ -4076,6 +4188,56 @@
               "$ref": "#/components/schemas/SearchResult"
             },
             "description": "网页结果；成功时始终为数组，空数组仍计费"
+          }
+        }
+      },
+      "WebFetchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "url"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "enum": [
+              "web-fetch"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "公开的 HTTP 或 HTTPS 地址，不含用户名或密码"
+          }
+        }
+      },
+      "WebFetchResponse": {
+        "type": "object",
+        "required": [
+          "url",
+          "status",
+          "content_type",
+          "body"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "重定向后的最终地址"
+          },
+          "status": {
+            "type": "integer",
+            "description": "目标网站的 HTTP 状态码"
+          },
+          "content_type": {
+            "type": "string",
+            "description": "目标 Content-Type，缺省时为空字符串"
+          },
+          "body": {
+            "type": "string",
+            "format": "byte",
+            "description": "解压后正文的 Base64 编码，无正文时为空字符串"
           }
         }
       },

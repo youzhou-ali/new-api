@@ -24,6 +24,7 @@ var defaultEndpointInfoMap = map[constant.EndpointType]EndpointInfo{
 	constant.EndpointTypeDeepSeekToolsSearch:   {Path: "/v1/tools/search", Method: "POST"},
 	constant.EndpointTypeDeepSeekToolsFetch:    {Path: "/v1/tools/fetch", Method: "POST"},
 	constant.EndpointTypeSearch:                {Path: "/v1/search", Method: "POST"},
+	constant.EndpointTypeWebFetch:              {Path: "/v1/fetch", Method: "POST"},
 	constant.EndpointTypeAnthropic:             {Path: "/v1/messages", Method: "POST"},
 	constant.EndpointTypeGemini:                {Path: "/v1beta/models/{model}:generateContent", Method: "POST"},
 	constant.EndpointTypeJinaRerank:            {Path: "/v1/rerank", Method: "POST"},

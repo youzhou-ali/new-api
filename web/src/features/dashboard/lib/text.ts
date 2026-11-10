@@ -25,8 +25,8 @@ export function getPreviewText(
 ): string {
   if (!content) return ''
   const plainText = content
-    .replace(/<[^>]*>/g, '') // Remove HTML tags
-    .replace(/[#*_]/g, '') // Remove Markdown formatting symbols
+    .replaceAll(/<[^>]*>/g, '') // Remove HTML tags
+    .replaceAll(/[#*_]/g, '') // Remove Markdown formatting symbols
     .trim()
   return plainText.length > maxLength
     ? plainText.substring(0, maxLength) + '...'

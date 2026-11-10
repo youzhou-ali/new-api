@@ -14,6 +14,7 @@ const (
 	EndpointTypeDeepSeekToolsSearch   = types.EndpointTypeDeepSeekToolsSearch
 	EndpointTypeDeepSeekToolsFetch    = types.EndpointTypeDeepSeekToolsFetch
 	EndpointTypeSearch                = types.EndpointTypeSearch
+	EndpointTypeWebFetch              = types.EndpointTypeWebFetch
 	EndpointTypeAnthropic             = types.EndpointTypeAnthropic
 	EndpointTypeGemini                = types.EndpointTypeGemini
 	EndpointTypeJinaRerank            = types.EndpointTypeJinaRerank

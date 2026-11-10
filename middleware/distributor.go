@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -45,6 +46,18 @@ func Distribute() func(c *gin.Context) {
 			RequestPath: c.Request.URL.Path,
 		})
 		service.AppendTaskPluginIdentityFilter(c, c.GetString("expected_task_plugin_key"))
+		if c.Request.URL.Path == "/v1/fetch" {
+			contentType := c.GetHeader("Content-Type")
+			mediaType, params, err := mime.ParseMediaType(contentType)
+			if err != nil || mediaType != gin.MIMEJSON {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgWebFetchJSONRequired), types.ErrorCodeInvalidRequest)
+				return
+			}
+			// The shared body readers expect the canonical JSON prefix.
+			if !strings.HasPrefix(contentType, gin.MIMEJSON) {
+				c.Request.Header.Set("Content-Type", mime.FormatMediaType(mediaType, params))
+			}
+		}
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
 			abortWithOpenAiMessage(c, invalidRequestStatus(err), i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
@@ -459,6 +472,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	}
 	if c.Request.URL.Path == "/v1/search" && constant.SearchChannelType(modelRequest.Model) == constant.ChannelTypeUnknown {
 		return nil, false, errors.New(i18n.T(c, i18n.MsgSearchInvalidModel))
+	}
+	if c.Request.URL.Path == "/v1/fetch" && modelRequest.Model != constant.WebFetchModel {
+		return nil, false, errors.New(i18n.T(c, i18n.MsgWebFetchInvalidModel))
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
 		if modelRequest.Model == "" {

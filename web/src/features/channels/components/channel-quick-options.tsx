@@ -27,7 +27,11 @@ import { SettingsSwitchField } from '@/features/system-settings/components/setti
 import { ChannelHealthSource } from '@/features/system-settings/request-policies/related-policy-link'
 import { cn } from '@/lib/utils'
 
-import { CHANNEL_TYPE_TASK_PLUGIN, MODEL_FETCHABLE_TYPES } from '../constants'
+import {
+  CHANNEL_TYPE_TASK_PLUGIN,
+  CHANNEL_TYPE_WEB_FETCH,
+  MODEL_FETCHABLE_TYPES,
+} from '../constants'
 import type { ChannelFormValues } from '../lib/channel-form'
 import {
   getHeaderPassthroughState,
@@ -99,7 +103,10 @@ export function ChannelQuickOptions(props: ChannelQuickOptionsProps) {
     )
 
   const options: QuickOption[] = []
-  if (props.channelType !== CHANNEL_TYPE_TASK_PLUGIN) {
+  if (
+    props.channelType !== CHANNEL_TYPE_TASK_PLUGIN &&
+    props.channelType !== CHANNEL_TYPE_WEB_FETCH
+  ) {
     options.push({
       key: 'passthrough',
       label: t('Pass Through Body'),

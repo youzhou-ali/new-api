@@ -24,6 +24,7 @@ import {
   CHANNEL_TYPE_BRAVE_SEARCH,
   CHANNEL_TYPE_BOCHA_SEARCH,
   CHANNEL_TYPE_BAIDU_SEARCH,
+  CHANNEL_TYPE_WEB_FETCH,
 } from '../constants'
 
 // ============================================================================
@@ -76,6 +77,12 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
     name: CHANNEL_TYPES[CHANNEL_TYPE_BAIDU_SEARCH],
     icon: 'Baidu',
     supportedModels: ['baidu-search'],
+  },
+  [CHANNEL_TYPE_WEB_FETCH]: {
+    id: CHANNEL_TYPE_WEB_FETCH,
+    name: CHANNEL_TYPES[CHANNEL_TYPE_WEB_FETCH],
+    icon: 'NewAPI',
+    supportedModels: ['web-fetch'],
   },
   [CHANNEL_TYPE_SGLANG]: {
     id: CHANNEL_TYPE_SGLANG,

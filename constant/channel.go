@@ -65,6 +65,7 @@ const (
 	ChannelTypeBraveSearch    = 65
 	ChannelTypeBochaSearch    = 66
 	ChannelTypeBaiduSearch    = 67
+	ChannelTypeWebFetch       = 68
 	ChannelTypeDummy          // this one is only for count, do not add any channel after this
 
 )
@@ -140,6 +141,7 @@ var ChannelBaseURLs = []string{
 	"https://api.search.brave.com",              //65
 	"https://api.bochaai.com",                   //66
 	"https://qianfan.baidubce.com",              //67
+	"",                                          //68
 }
 
 func GetChannelBaseURL(channelType int) string {
@@ -214,6 +216,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeBraveSearch:    "Brave Search",
 	ChannelTypeBochaSearch:    "Bocha Search",
 	ChannelTypeBaiduSearch:    "Baidu Search",
+	ChannelTypeWebFetch:       "Web Fetch",
 }
 
 func GetChannelTypeName(channelType int) string {

@@ -212,10 +212,10 @@ export const WebPreviewBody = ({
     <div className='flex-1'>
       <iframe
         className={cn('size-full', className)}
-        sandbox='allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'
         src={(src ?? url) || undefined}
         title={t('Preview')}
         {...props}
+        sandbox='allow-scripts allow-forms allow-popups allow-presentation'
       />
       {loading}
     </div>
@@ -238,6 +238,7 @@ export const WebPreviewConsole = ({
 }: WebPreviewConsoleProps) => {
   const { t } = useTranslation()
   const { consoleOpen, setConsoleOpen } = useWebPreview()
+  const logCounts = new Map<string, number>()
 
   return (
     <Collapsible
@@ -272,22 +273,31 @@ export const WebPreviewConsole = ({
           {logs.length === 0 ? (
             <p className='text-muted-foreground'>{t('No console output')}</p>
           ) : (
-            logs.map((log, index) => (
-              <div
-                className={cn(
-                  'text-xs',
-                  log.level === 'error' && 'text-destructive',
-                  log.level === 'warn' && 'text-warning',
-                  log.level === 'log' && 'text-foreground'
-                )}
-                key={`${log.timestamp.getTime()}-${index}`}
-              >
-                <span className='text-muted-foreground'>
-                  {dayjs(log.timestamp).format('HH:mm:ss')}
-                </span>{' '}
-                {log.message}
-              </div>
-            ))
+            logs.map((log) => {
+              const identity = JSON.stringify([
+                log.timestamp.getTime(),
+                log.level,
+                log.message,
+              ])
+              const count = logCounts.get(identity) ?? 0
+              logCounts.set(identity, count + 1)
+              return (
+                <div
+                  className={cn(
+                    'text-xs',
+                    log.level === 'error' && 'text-destructive',
+                    log.level === 'warn' && 'text-warning',
+                    log.level === 'log' && 'text-foreground'
+                  )}
+                  key={`${identity}:${count}`}
+                >
+                  <span className='text-muted-foreground'>
+                    {dayjs(log.timestamp).format('HH:mm:ss')}
+                  </span>{' '}
+                  {log.message}
+                </div>
+              )
+            })
           )}
           {children}
         </div>

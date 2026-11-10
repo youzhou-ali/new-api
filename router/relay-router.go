@@ -78,6 +78,9 @@ func SetRelayRouter(router *gin.Engine) {
 		// response.create event; each event runs the ordinary request limiter.
 		relayV1Router.GET("/responses", controller.ResponsesWebSocket)
 	}
+	relayV1Router.POST("/fetch", middleware.WebFetchLimit(), middleware.Distribute(), func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatWebFetch)
+	})
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
 	{
 		// WebSocket 路由（统一到 Relay）
