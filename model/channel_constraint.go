@@ -109,8 +109,8 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		if !constant.IsAdvancedCustomChannel(ch.Type) {
 			return true
 		}
-		config := ch.GetOtherSettings().AdvancedCustom
-		return config != nil && config.SupportsPathForModel(filter.RequestPath, modelName)
+		_, matched := common.MatchAdvancedCustomRequestRoute(ch.GetOtherSettings().AdvancedCustom, filter.RequestPath, modelName)
+		return matched
 	case dto.FilterTaskPluginIdentity:
 		if filter.TaskPluginKey == "" {
 			return ch.Type != constant.ChannelTypeTaskPlugin

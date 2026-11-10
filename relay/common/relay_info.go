@@ -318,7 +318,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	if channelType == constant.ChannelTypeAdvancedCustom &&
 		!channelMeta.ChannelSetting.PassThroughBodyEnabled &&
 		c.Request != nil && c.Request.URL != nil {
-		route, matched := channelMeta.ChannelOtherSettings.AdvancedCustom.MatchPathForModel(c.Request.URL.Path, info.OriginModelName)
+		route, matched := common.MatchAdvancedCustomRequestRoute(channelMeta.ChannelOtherSettings.AdvancedCustom, c.Request.URL.Path, info.OriginModelName)
 		if matched && route.PassThroughBodyEnabled {
 			channelMeta.ChannelSetting.PassThroughBodyEnabled = true
 		}

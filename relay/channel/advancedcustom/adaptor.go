@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
@@ -365,7 +366,7 @@ func (a *Adaptor) resolve(c *gin.Context, info *relaycommon.RelayInfo) error {
 	}
 
 	incomingPath := incomingRequestPath(c, info)
-	route, ok := config.MatchPathForModel(incomingPath, info.OriginModelName)
+	route, ok := common.MatchAdvancedCustomRequestRoute(config, incomingPath, info.OriginModelName)
 	if ok {
 		route.Converter = strings.TrimSpace(route.Converter)
 		if route.Converter == "" {
