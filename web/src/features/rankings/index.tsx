@@ -55,6 +55,42 @@ export function Rankings() {
     })
   }
 
+  let rankingsContent
+  if (rankingsQuery.isLoading) {
+    rankingsContent = <RankingsLoading />
+  } else if (!snapshot) {
+    rankingsContent = (
+      <RankingsError
+        message={
+          rankingsQuery.error instanceof Error
+            ? rankingsQuery.error.message
+            : t('Unable to load rankings data')
+        }
+      />
+    )
+  } else {
+    rankingsContent = (
+      <>
+        <ModelsSection
+          history={snapshot.models_history}
+          rows={snapshot.models}
+          period={period}
+        />
+
+        <MarketShareSection
+          history={snapshot.vendor_share_history}
+          rows={snapshot.vendors}
+          period={period}
+        />
+
+        <PulseSection
+          movers={snapshot.top_movers}
+          droppers={snapshot.top_droppers}
+        />
+      </>
+    )
+  }
+
   return (
     <PublicLayout showMainContainer={false}>
       <div className='relative'>
@@ -76,36 +112,7 @@ export function Rankings() {
         <PageTransition className='relative mx-auto w-full max-w-[1280px] space-y-8 px-3 pt-16 pb-10 sm:px-6 sm:pt-20 sm:pb-12 xl:px-8'>
           <RankingsHero period={period} onPeriodChange={handlePeriodChange} />
 
-          {rankingsQuery.isLoading ? (
-            <RankingsLoading />
-          ) : !snapshot ? (
-            <RankingsError
-              message={
-                rankingsQuery.error instanceof Error
-                  ? rankingsQuery.error.message
-                  : t('Unable to load rankings data')
-              }
-            />
-          ) : (
-            <>
-              <ModelsSection
-                history={snapshot.models_history}
-                rows={snapshot.models}
-                period={period}
-              />
-
-              <MarketShareSection
-                history={snapshot.vendor_share_history}
-                rows={snapshot.vendors}
-                period={period}
-              />
-
-              <PulseSection
-                movers={snapshot.top_movers}
-                droppers={snapshot.top_droppers}
-              />
-            </>
-          )}
+          {rankingsContent}
         </PageTransition>
       </div>
     </PublicLayout>
