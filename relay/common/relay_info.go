@@ -210,6 +210,7 @@ type RelayInfo struct {
 	// upstream that bills page fetches under its own price list; empty keeps
 	// the protocol default web_fetch.
 	WebFetchBillingKey string
+	WebFetchLog        map[string]any
 	// requestInferredToolKey is the tool-price key RecordRequestInferredToolCall
 	// billed for the current channel attempt.
 	requestInferredToolKey string
@@ -732,9 +733,9 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 	case types.RelayFormatDeepSeekTools:
 		info = genBaseRelayInfo(c, request)
 		info.RelayFormat = types.RelayFormatDeepSeekTools
-	case types.RelayFormatSearch:
+	case types.RelayFormatSearch, types.RelayFormatWebFetch:
 		info = genBaseRelayInfo(c, request)
-		info.RelayFormat = types.RelayFormatSearch
+		info.RelayFormat = relayFormat
 		info.ForcePreConsume = true
 	case types.RelayFormatTask:
 		info = genBaseRelayInfo(c, nil)

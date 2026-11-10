@@ -42,12 +42,15 @@ export const CHANNEL_TYPE_TAVILY = 64
 export const CHANNEL_TYPE_BRAVE_SEARCH = 65
 export const CHANNEL_TYPE_BOCHA_SEARCH = 66
 export const CHANNEL_TYPE_BAIDU_SEARCH = 67
+export const CHANNEL_TYPE_WEB_FETCH = 68
 
 export const SEARCH_CHANNEL_TYPES = new Set([
   CHANNEL_TYPE_TAVILY,
   CHANNEL_TYPE_BRAVE_SEARCH,
   CHANNEL_TYPE_BOCHA_SEARCH,
   CHANNEL_TYPE_BAIDU_SEARCH,
+  // Web Fetch shares the restricted model form and non-streaming tests.
+  CHANNEL_TYPE_WEB_FETCH,
 ])
 
 export const CHANNEL_TYPES = {
@@ -115,6 +118,7 @@ export const CHANNEL_TYPES = {
   65: 'Brave Search',
   66: 'Bocha Search',
   67: 'Baidu Search',
+  68: 'Web Fetch',
 } as const
 
 export type ChannelProviderPresentation = {
@@ -202,6 +206,10 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
   65: { descriptionKey: 'Search the web with Brave Search' },
   66: { descriptionKey: 'Search the web with Bocha Search' },
   67: { descriptionKey: 'Search the web with Baidu Search' },
+  68: {
+    descriptionKey:
+      'Fetch public web pages from this gateway. The key is not used; enter any placeholder.',
+  },
 } satisfies Record<
   Exclude<keyof typeof CHANNEL_TYPES, 0 | typeof CHANNEL_TYPE_TASK_PLUGIN>,
   ChannelProviderPresentation
@@ -210,7 +218,7 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
 const CHANNEL_TYPE_DISPLAY_ORDER: number[] = [
   1, 14, 24, 33, 43, 3, 41, 17, 45, 25, 26, 23, 48, 60, 58, 59, 61, 42, 34, 20,
   4, 62, 40, 27, 15, 46, 18, 31, 35, 49, 19, 47, 37, 38, 39, 11, 8, 57, 22, 21,
-  44, 64, 65, 66, 67, 2, 5, 36, 50, 51, 52, 53, 54, 55, 56,
+  44, 64, 65, 66, 67, 68, 2, 5, 36, 50, 51, 52, 53, 54, 55, 56,
 ]
 
 export const CHANNEL_TYPE_OPTIONS: { value: number; label: string }[] = (() => {
@@ -593,6 +601,7 @@ export const TYPE_TO_KEY_PROMPT: Record<number, string> = {
   60: 'Enter API key for this channel',
   62: 'vLLM API key, or EMPTY if authentication is disabled',
   63: 'SGLang API key, or EMPTY if authentication is disabled',
+  68: 'Enter any placeholder; this channel has no upstream key',
 }
 
 export const CHANNEL_TYPE_WARNINGS: Record<number, string> = {

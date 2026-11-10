@@ -3036,8 +3036,9 @@ test('AWS interface selection is disabled without sensitive channel write permis
 test.each([
   [64, 'tavily-search', 'tavily-search-advanced', 'https://api.tavily.com'],
   [67, 'baidu-search', 'baidu-search', 'https://qianfan.baidubce.com'],
+  [68, 'web-fetch', 'web-fetch', undefined],
 ] as const)(
-  'search channel type %s offers its own products and hides unsupported mapping and parameter overrides',
+  'tool channel type %s offers its own models and hides unsupported mapping and parameter overrides',
   async (type, model, option, baseURL) => {
     editingChannel = {
       ...editingChannel,
@@ -3048,10 +3049,12 @@ test.each([
     const user = userEvent.setup()
     render(<ConfigurationHarness currentRow={editingChannel} />)
     await screen.findByDisplayValue('Existing channel')
-    expect(screen.getByRole('textbox', { name: 'Base URL' })).toHaveAttribute(
-      'placeholder',
-      baseURL
-    )
+    if (baseURL) {
+      expect(screen.getByRole('textbox', { name: 'Base URL' })).toHaveAttribute(
+        'placeholder',
+        baseURL
+      )
+    }
     const models = within(screen.getByRole('group', { name: 'Models' }))
     await user.click(
       models.getByRole('combobox', { name: 'Select models or add custom ones' })
@@ -3070,7 +3073,121 @@ test.each([
     ).not.toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
     expect(screen.queryByText('Parameter Override')).not.toBeInTheDocument()
-    expect(screen.getByText('Request Header Override')).toBeVisible()
+    if (type === 68) {
+      expect(
+        screen.queryByText('Request Header Override')
+      ).not.toBeInTheDocument()
+    } else {
+      expect(screen.getByText('Request Header Override')).toBeVisible()
+    }
+  }
+)
+
+test('creating a Web Fetch channel saves the fixed model and a placeholder key', async () => {
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness />)
+  await user.click(
+    screen.getByRole('option', { name: 'Web Fetch Built-in #68' })
+  )
+  const key = screen.getByLabelText('API Key *')
+  expect(key).toHaveAttribute(
+    'placeholder',
+    'Enter any placeholder; this channel has no upstream key'
+  )
+  await user.click(screen.getByRole('tab', { name: /Other Settings/ }))
+  expect(screen.queryByLabelText('Proxy Address')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('tab', { name: /Connection & Models/ }))
+  await user.type(screen.getByLabelText('API Key *'), 'placeholder')
+  await user.click(screen.getByRole('button', { name: 'Create Channel' }))
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel',
+      expect.objectContaining({
+        channel: expect.objectContaining({
+          type: 68,
+          models: 'web-fetch',
+          key: 'placeholder',
+          base_url: null,
+        }),
+      }),
+      expect.anything()
+    )
+  )
+})
+
+test.each([
+  { transport: 'HTTP/1.1', setting: { http_protocol: 'http1' } },
+  { transport: 'HTTP/2', setting: { http2_connection_shards: 4 } },
+])(
+  'switching a $transport channel to Web Fetch clears unsupported upstream settings',
+  async ({ setting }) => {
+    editingChannel = {
+      ...editingChannel,
+      test_model: 'custom-model',
+      model_mapping: '{"custom-model":"upstream-model"}',
+      param_override: '{"temperature":0.7}',
+      header_override: '{"*":true,"X-Trace":"trace"}',
+      setting: JSON.stringify({
+        ...setting,
+        proxy: 'https://proxy.example',
+        pass_through_body_enabled: true,
+        tls_insecure_skip_verify: true,
+      }),
+    }
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    await user.click(screen.getByRole('button', { name: 'Change provider' }))
+    await user.click(
+      screen.getByRole('option', { name: 'Web Fetch Built-in #68' })
+    )
+    expect(
+      screen.queryByRole('switch', { name: 'Pass Through Body' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('switch', { name: 'Pass Through Request Headers' })
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+    expect(
+      screen.queryByRole('switch', { name: 'Pass Through Body' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Request Header Override')
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /Other Settings/ }))
+    expect(screen.queryByLabelText('HTTP Protocol')).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('HTTP/2 Connection Shards')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('switch', { name: 'Skip Upstream TLS Verification' })
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const payload = put.mock.calls[0]?.[1] as Channel
+    expect(payload).toMatchObject({
+      type: 68,
+      models: 'web-fetch',
+      base_url: '',
+      test_model: '',
+      model_mapping: '',
+      param_override: '',
+      header_override: '',
+    })
+    const savedSetting = JSON.parse(payload.setting ?? '{}')
+    expect(savedSetting).toMatchObject({
+      proxy: '',
+      pass_through_body_enabled: false,
+    })
+    expect(savedSetting).not.toHaveProperty('http_protocol')
+    expect(savedSetting).not.toHaveProperty('http2_connection_shards')
+    expect(savedSetting).not.toHaveProperty('tls_insecure_skip_verify')
   }
 )
 
@@ -3098,8 +3215,9 @@ test.each([
   [65, 'brave-search'],
   [66, 'bocha-search'],
   [67, 'baidu-search'],
+  [68, 'web-fetch'],
 ] as const)(
-  'search channel type %s disables streaming in automatic endpoint tests',
+  'tool channel type %s disables streaming in automatic endpoint tests',
   async (type, model) => {
     editingChannel = { ...editingChannel, type, models: model }
     const user = userEvent.setup()

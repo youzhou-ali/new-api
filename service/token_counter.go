@@ -46,7 +46,7 @@ func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, strea
 }
 
 func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relaycommon.RelayInfo) (int, error) {
-	if info.RelayFormat == types.RelayFormatSearch {
+	if info.RelayFormat == types.RelayFormatSearch || info.RelayFormat == types.RelayFormatWebFetch {
 		return 0, nil
 	}
 	// 是否统计token

@@ -11,6 +11,7 @@ const (
 	RelayFormatOpenAIAlphaSearch                     = "openai_alpha_search"
 	RelayFormatDeepSeekTools                         = "deepseek_tools"
 	RelayFormatSearch                                = "search"
+	RelayFormatWebFetch                              = "web_fetch"
 	RelayFormatOpenAIAudio                           = "openai_audio"
 	RelayFormatOpenAIImage                           = "openai_image"
 	RelayFormatOpenAIRealtime                        = "openai_realtime"

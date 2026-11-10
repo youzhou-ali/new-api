@@ -37,6 +37,8 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	switch info.RelayMode {
 	case relayconstant.RelayModeSearch:
 		err = relay.SearchHelper(c, info)
+	case relayconstant.RelayModeWebFetch:
+		err = relay.WebFetchHelper(c, info)
 	case relayconstant.RelayModeImagesGenerations, relayconstant.RelayModeImagesEdits:
 		err = relay.ImageHelper(c, info)
 	case relayconstant.RelayModeAudioSpeech:

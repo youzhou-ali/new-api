@@ -45,6 +45,8 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 		request, err = GetAndValidateDeepSeekToolsRequest(c)
 	case types.RelayFormatSearch:
 		request, err = GetAndValidateSearchRequest(c)
+	case types.RelayFormatWebFetch:
+		request, err = GetAndValidateWebFetchRequest(c)
 
 	case types.RelayFormatOpenAIImage:
 		request, err = GetAndValidOpenAIImageRequest(c, relayMode)

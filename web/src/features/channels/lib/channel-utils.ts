@@ -60,6 +60,7 @@ export function getChannelTypeIcon(type: number): string {
     65: 'Brave', // Brave Search
     66: 'Bocha', // Bocha Search
     67: 'Baidu', // Baidu Search
+    68: 'NewAPI', // Web Fetch
     3: 'Azure', // Azure
 
     // Anthropic

@@ -539,6 +539,21 @@ const SEARCH_PARAMS: SupportedParameter[] = [
   },
 ]
 
+const WEB_FETCH_PARAMS: SupportedParameter[] = [
+  {
+    name: 'model',
+    type: 'string',
+    required: true,
+    descriptionKey: 'Must be web-fetch',
+  },
+  {
+    name: 'url',
+    type: 'string',
+    required: true,
+    descriptionKey: 'Public HTTP or HTTPS URL, up to 4000 characters',
+  },
+]
+
 const COMMON_CHAT_PARAMS: SupportedParameter[] = [
   {
     name: 'temperature',
@@ -797,6 +812,7 @@ type ApiCategory =
   | 'video'
   | 'chat'
   | 'search'
+  | 'web-fetch'
 
 /**
  * Refine the broad PROFILE_BY_NAME bucket into an API-shape category. The
@@ -806,6 +822,7 @@ type ApiCategory =
  */
 function apiCategoryOf(model: PricingModel): ApiCategory {
   if (model.supported_endpoint_types?.includes('search')) return 'search'
+  if (model.supported_endpoint_types?.includes('web-fetch')) return 'web-fetch'
   const profile = PROFILE_BY_NAME(model.model_name)
   if (profile === 'embedding' || profile === 'reasoning') return profile
   if (profile === 'image') {
@@ -826,6 +843,7 @@ export function buildSupportedParameters(
 ): SupportedParameter[] {
   const cat = apiCategoryOf(model)
   if (cat === 'search') return SEARCH_PARAMS
+  if (cat === 'web-fetch') return WEB_FETCH_PARAMS
   if (cat === 'reasoning') return REASONING_PARAMS
   if (cat === 'embedding') return EMBEDDING_PARAMS
   if (cat === 'image') return IMAGE_PARAMS
@@ -842,10 +860,10 @@ export type RateLimit = {
 
 /** Build per-group RPM / TPM / RPD limits for the model. */
 export function buildRateLimits(model: PricingModel): RateLimit[] {
-  if (model.supported_endpoint_types?.includes('search')) return []
+  const cat = apiCategoryOf(model)
+  if (cat === 'search' || cat === 'web-fetch') return []
   const groups = (model.enable_groups ?? []).filter((g) => g && g !== 'auto')
   const targets = groups.length > 0 ? groups : ['default']
-  const cat = apiCategoryOf(model)
   const baseSeed = hashStringToSeed(`${model.model_name}:rl`)
   const isHeavy = cat === 'image' || cat === 'video'
   const isLight = cat === 'embedding'

@@ -193,10 +193,12 @@ const endpointTypeOptions: Array<{ value: string; label: string }> = [
   },
   { value: 'embeddings', label: 'Embeddings (/v1/embeddings)' },
   { value: 'search', label: 'Web Search (/v1/search)' },
+  { value: 'web-fetch', label: 'Web Fetch (/v1/fetch)' },
 ]
 
 const STREAM_INCOMPATIBLE_ENDPOINTS = new Set([
   'search',
+  'web-fetch',
   'embeddings',
   'image-generation',
   'jina-rerank',

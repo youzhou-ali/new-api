@@ -110,6 +110,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	endpointType = normalizeChannelTestEndpoint(channel, endpointType)
+	if channel.Type == constant.ChannelTypeWebFetch || endpointType == string(constant.EndpointTypeWebFetch) {
+		return testWebFetchChannel(ctx, channel, testUserID, testModel, endpointType, isStream)
+	}
 	if constant.IsSearchChannel(channel.Type) || endpointType == string(constant.EndpointTypeSearch) {
 		return testSearchChannel(ctx, channel, testUserID, testModel, endpointType, isStream)
 	}
@@ -579,6 +582,57 @@ func testSearchChannel(ctx context.Context, channel *model.Channel, userID int, 
 		ChannelId: channel.Id, ModelName: modelName, TokenName: "Model test", Quota: quota,
 		Content: []*common.Message{common.NewMessage("Model test")}, Group: info.UsingGroup,
 		Other: buildTestLogOther(c, info, price, usage, tiered),
+	})
+	return testResult{context: c}
+}
+
+func testWebFetchChannel(ctx context.Context, channel *model.Channel, userID int, modelName, endpointType string, stream bool) testResult {
+	if stream || (endpointType != "" && endpointType != string(constant.EndpointTypeWebFetch)) ||
+		channel.Type != constant.ChannelTypeWebFetch || modelName != constant.WebFetchModel {
+		return testResult{localErr: common.NewMessage("Web Fetch channels require the web-fetch endpoint without streaming")}
+	}
+	if err := channel.ValidateSearchConfiguration(); err != nil {
+		return testResult{localErr: err}
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	request := &dto.WebFetchRequest{Model: modelName, URL: "https://example.com"}
+	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/fetch", nil)
+	c.Request.Header.Set("Content-Type", gin.MIMEJSON)
+	cache, err := model.GetUserCache(userID)
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	cache.WriteContext(c)
+	c.Set("id", userID)
+	c.Set("group", cache.Group)
+	if apiErr := middleware.SetupContextForSelectedChannel(c, channel, modelName); apiErr != nil {
+		return testResult{context: c, localErr: apiErr, newAPIError: apiErr}
+	}
+	info, err := relaycommon.GenRelayInfo(c, types.RelayFormatWebFetch, request, nil)
+	if err != nil {
+		return testResult{context: c, localErr: err}
+	}
+	info.IsChannelTest = true
+	if err := attachTestBillingRequestInput(info, request); err != nil {
+		return testResult{context: c, localErr: err}
+	}
+	price, err := helper.ModelPriceHelper(c, info, 0, request.GetTokenCountMeta())
+	if err != nil {
+		return testResult{context: c, localErr: err}
+	}
+	if info.TieredBillingSnapshot == nil || info.TieredBillingSnapshot.EstimatedBillingUnit != billingexpr.BillingUnitRequest {
+		return testResult{context: c, localErr: errors.New(i18n.T(c, i18n.MsgWebFetchFixedPriceRequired))}
+	}
+	if _, apiErr := relay.PerformWebFetch(c, info); apiErr != nil {
+		return testResult{context: c, localErr: apiErr, newAPIError: apiErr}
+	}
+	usage := &dto.Usage{}
+	quota, tiered := settleTestQuota(info, price, usage)
+	other := buildTestLogOther(c, info, price, usage, tiered)
+	other.SetPublic("web_fetch", info.WebFetchLog)
+	model.RecordConsumeLog(c, userID, model.RecordConsumeLogParams{
+		ChannelId: channel.Id, ModelName: modelName, TokenName: "Model test", Quota: quota,
+		Content: []*common.Message{common.NewMessage("Model test")}, Group: info.UsingGroup, Other: other,
 	})
 	return testResult{context: c}
 }
